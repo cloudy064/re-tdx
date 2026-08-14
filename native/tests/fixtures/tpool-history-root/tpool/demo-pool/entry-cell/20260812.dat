@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root><data>
+<stk market="0" code="000001" indate="20260812" intime="093001"
+ inprice="10.25" income="1.50" now="10.40" rise="1.46" volume="123400"
+ maxrate="2.75" maxperiod="7" maxtime="20260810" maxprice="10.53" idaynum="2" />
+<stk market="1" code="600000" indate="20260812" intime="145959"
+ inprice="9.80" income="-0.10" now="9.79" rise="-0.10" volume="88000"
+ maxrate="0.90" maxperiod="3" maxtime="20260811" maxprice="9.89" idaynum="1" />
+</data></root>

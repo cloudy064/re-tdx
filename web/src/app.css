@@ -1,0 +1,285 @@
+/* =============================================================================
+   TDX 工作台 · 设计系统
+   专业终端基调：中性深灰、零渐变、零发光、极小圆角、信息密度优先。
+   颜色只承载语义（涨跌 / 状态 / 焦点），不用于装饰。
+   ============================================================================= */
+
+:root {
+  /* --- 排版 ------------------------------------------------------------- */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  --font-num: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* 字号只有五档，禁止在组件里写其他值 */
+  --fs-micro: 11px; /* 表格、标签、辅助信息 */
+  --fs-body: 12px;  /* 默认 UI 文本 */
+  --fs-title: 13px; /* 面板标题、导航项 */
+  --fs-lead: 15px;  /* 页面标题、强调数值 */
+  --fs-hero: 22px;  /* 现价等唯一主数值 */
+
+  --lh-tight: 1.25;
+  --lh-body: 1.5;
+
+  /* --- 4px 栅格 --------------------------------------------------------- */
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 24px;
+
+  /* 固定结构尺寸 */
+  --h-topbar: 40px;
+  --h-row: 26px;      /* 数据表行高 */
+  --h-control: 24px;  /* 按钮 / 输入 / 分段控件 */
+  --w-nav: 184px;
+  --w-nav-collapsed: 44px;
+
+  --radius: 2px;
+  --radius-lg: 4px;
+
+  --dur: 90ms;
+
+  /* --- 深色（默认） ------------------------------------------------------ */
+  --bg-app: #0d0f12;      /* 应用底 */
+  --bg-panel: #14171c;    /* 面板 */
+  --bg-raised: #1a1e24;   /* 表头、工具条、抬升面 */
+  --bg-hover: #22272f;    /* 悬停 */
+  --bg-active: #2a303a;   /* 按下 / 选中 */
+  --bg-input: #0f1216;
+
+  --line: #262b33;        /* 常规分割线 */
+  --line-strong: #333a44; /* 结构边界 */
+
+  --fg: #e6e8ec;          /* 主文本 */
+  --fg-dim: #9aa3af;      /* 次文本、表头 */
+  --fg-mute: #6b7280;     /* 弱化、占位 */
+
+  /* 语义色：A 股约定，红涨绿跌 */
+  --up: #f5484a;
+  --up-soft: rgba(245, 72, 74, 0.14);
+  --down: #22b07d;
+  --down-soft: rgba(34, 176, 125, 0.14);
+  --flat: #9aa3af;
+  --flat-soft: rgba(154, 163, 175, 0.12);
+
+  /* 焦点与选中：蓝色，刻意避开红绿以免与涨跌混淆 */
+  --focus: #3d7eff;
+  --focus-soft: rgba(61, 126, 255, 0.16);
+  --warn: #d99e2b;
+  --warn-soft: rgba(217, 158, 43, 0.14);
+
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.5);
+
+  /* 实心语义底（涨/跌徽标、主按钮）上的前景色 */
+  --on-solid: #ffffff;
+  /* 模态遮罩 */
+  --scrim: rgba(0, 0, 0, 0.5);
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg-app: #eef0f3;
+  --bg-panel: #ffffff;
+  --bg-raised: #f4f6f8;
+  --bg-hover: #e9edf1;
+  --bg-active: #dde3ea;
+  --bg-input: #ffffff;
+
+  --line: #e0e4ea;
+  --line-strong: #c8cfd8;
+
+  --fg: #1a1d21;
+  --fg-dim: #5b636e;
+  --fg-mute: #868e99;
+
+  --up: #d92b2d;
+  --up-soft: rgba(217, 43, 45, 0.10);
+  --down: #0e8f62;
+  --down-soft: rgba(14, 143, 98, 0.10);
+  --flat: #5b636e;
+  --flat-soft: rgba(91, 99, 110, 0.10);
+
+  --focus: #1f5fd8;
+  --focus-soft: rgba(31, 95, 216, 0.12);
+  --warn: #a8720c;
+  --warn-soft: rgba(168, 114, 12, 0.12);
+
+  --shadow-pop: 0 4px 16px rgba(15, 20, 30, 0.14);
+
+  --on-solid: #ffffff;
+  /* 浅色下遮罩要淡得多，沿用深色的 0.5 会把整页压成灰片 */
+  --scrim: rgba(15, 20, 30, 0.28);
+
+  color-scheme: light;
+}
+
+/* --- 基础重置 ----------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden; /* 工作区自管滚动，页面本身不滚 */
+}
+
+#app {
+  height: 100%;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--focus);
+  text-decoration: none;
+}
+
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+/* 统一焦点环：键盘可达性必须保留，鼠标点击不显示 */
+:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* --- 滚动条 ------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-mute);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* --- 全局工具类 --------------------------------------------------------- */
+
+/* 数值一律等宽 + 等宽数字，保证表格纵向对齐 */
+.num {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.up {
+  color: var(--up);
+}
+
+.down {
+  color: var(--down);
+}
+
+.flat {
+  color: var(--flat);
+}
+
+.dim {
+  color: var(--fg-dim);
+}
+
+.mute {
+  color: var(--fg-mute);
+}
+
+/* 区块小标题：全大写字距拉开，用于标注数据来源协议 */
+.eyebrow {
+  font-family: var(--font-num);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  color: var(--fg-mute);
+  text-transform: uppercase;
+}
+
+.truncate {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

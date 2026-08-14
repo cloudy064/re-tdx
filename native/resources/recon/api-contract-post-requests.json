@@ -1,0 +1,230 @@
+{
+  "schema": "tdx-recon-api-contract-requests-v1",
+  "requests": [
+    {
+      "id": "formula-adjustment-flag-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"kind\":\"stock\",\"formula\":\"CONTRACT_ADJUSTMENT_FLAG\",\"source\":\"T:TQFLAG;TF:TQFLAG();\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"adjust\":\"qfq\",\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-autofilter-trace-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_AUTOFILTER_TRACE\",\"source\":\"SELL(CURRBARSCOUNT=6,HIGH);BUY(CURRBARSCOUNT>=5,LOW);SELL(CURRBARSCOUNT=4,HIGH);SELLSHORT(CURRBARSCOUNT=3,HIGH);BUYSHORT(CURRBARSCOUNT=2,LOW);BUYSHORT(CURRBARSCOUNT=1,LOW);AUTOFILTER;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":6,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-background-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_BACKGROUND\",\"source\":\"DRAWGBK_DIV(CLOSE>=OPEN,RGB(1,2,3),RGB(4,5,6),0,0);DRAWGBK_DIV(1,RGB(1,2,3),RGB(4,5,6),17,0);X:CLOSE;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-benchmark-cumulative-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_BENCHMARK_CUMULATIVE\",\"source\":\"SEQ:=TOTALBARSCOUNT-CURRBARSCOUNT+1;X:=IF(SEQ=1,10,1);SB:SUMBARS(X,5);SX:SUMBARSX(X,5);ONE:=1;NB:SUMBARS(ONE,200);NX:SUMBARSX(ONE,200);BT:BETA(20);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-block-code-name-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_BLOCK_CODE_NAME\",\"source\":\"G:STRCMP(GNBKZSCODE(1),'880609');F:STRCMP(FGBKZSCODE(1),'880679');H:STRCMP(GETNAMEOFCODE(1,HYZSCODE),'银行');CG:STRCMP(GETNAMEOFCODE(1,GNBKZSCODE(1)),'跨境支付');CF:STRCMP(GETNAMEOFCODE(1,FGBKZSCODE(1)),'周期股');MISS:STRCMP(GNBKZSCODE(99),'');BSH:BLOCKSETNUM('HY.银行');BSG:BLOCKSETNUM('GN.跨境支付');BSM:BLOCKSETNUM('不存在');HS:HORCALC('HY.银行',103,0,2);HR:HORCALC('HY.银行',103,1,2);HA:HORCALC('HY.银行',103,2,2);IRD:INSORT('HY.银行','KDJ',3,0);IRA:INSORT('HY.银行','KDJ',3,1);ISS:INSUM('HY.银行','KDJ',3,0);IAV:INSUM('HY.银行','KDJ',3,1);IMX:INSUM('HY.银行','KDJ',3,2);IMN:INSUM('HY.银行','KDJ',3,3);IMXI:INSUM('HY.银行','KDJ',3,4);IMNI:INSUM('HY.银行','KDJ',3,5);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-block-metadata-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_BLOCK_METADATA\",\"source\":\"M:INBLOCK('银行');MISS:INBLOCK('不存在的板块');N:GNBLOCKNUM+FGBLOCKNUM+ZSBLOCKNUM;DRAWTEXT_FIX(ISLASTBAR,0,0,0,STRCAT(FGBLOCK,ZSBLOCK));DRAWTEXT_FIX(ISLASTBAR,0,0,0,HYZSCODE);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-calendar-filter-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_CALENDAR_FILTER\",\"source\":\"SEQ:=TOTALBARSCOUNT-CURRBARSCOUNT+1;BD:DATE;WOY:WEEKOFYEAR;T2:TIME2;D0:DATETODAY(901219);D1:DATETOTODAY(901220);DT:DAYTODATE(13);TS:TIMETOSEC(93000);ST:SECTOTIME(34200);RT:DAYTODATE(DATETODAY(DATE));DC:DATETOCUR(0);DL:DATETOCUR(IF(ISLASTBAR,0,9999999));DN:DATETOCUR(DRAWNULL);DF:DATETOCUR(9999999);RAW:=IF(SEQ=2 OR SEQ=4 OR SEQ=5,SEQ,DRAWNULL);AR:ALIGNRIGHT(RAW);LATEST:TFILT(SEQ,0,0,0,2359);B:=SEQ=1 OR SEQ=2 OR SEQ=5 OR SEQ=7 OR SEQ=9 OR SEQ=10;S:=SEQ=3 OR SEQ=4 OR SEQ=5 OR SEQ=6 OR SEQ=9;F0:TFILTER(B,S,0);F1:TFILTER(B,S,1);F2:TFILTER(B,S,2);BO:=SEQ=1 OR SEQ=2 OR SEQ=5 OR SEQ=9;SC:=SEQ=3 OR SEQ=4 OR SEQ=6 OR SEQ=9;SO:=SEQ=3 OR SEQ=6 OR SEQ=7;BC:=SEQ=2 OR SEQ=4 OR SEQ=8 OR SEQ=10;TT0:TTFILTER(BO,SC,SO,BC,0);TT1:TTFILTER(BO,SC,SO,BC,1);TT2:TTFILTER(BO,SC,SO,BC,2);TT3:TTFILTER(BO,SC,SO,BC,3);TT4:TTFILTER(BO,SC,SO,BC,4);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":true,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-cloud-calc-batch-post",
+      "action": "formula-cloud-calc-batch",
+      "body": "{\"cfg\":\"func_kzz_kzzsy101\",\"rows\":[{\"$ZQDM\":\"110075\",\"$SC\":\"1\",\"MZ\":100,\"ZGJ\":6.17,\"$ZQDM1\":\"600029\",\"$SC1\":\"1\",\"XXCFBL\":85,\"HSCFBL\":70,\"QSCFBL\":130,\"QXRQ\":\"20201015\",\"DQRQ\":\"20261015\",\"SYNX\":0.192,\"SYNXSYL\":0.014769,\"LLLXBZ\":3,\"SYFXCS\":1,\"SYFXLLXL\":\"0.0650\",\"SGFXRQ\":\"20251015\",\"FXPL1\":12,\"XGFXRQ\":\"20261015\"},{\"$ZQDM\":\"110075\",\"$SC\":\"1\",\"MZ\":110,\"ZGJ\":6.17,\"$ZQDM1\":\"600029\",\"$SC1\":\"1\",\"XXCFBL\":85,\"HSCFBL\":70,\"QSCFBL\":130,\"QXRQ\":\"20201015\",\"DQRQ\":\"20261015\",\"SYNX\":0.192,\"SYNXSYL\":0.014769,\"LLLXBZ\":3,\"SYFXCS\":1,\"SYFXLLXL\":\"0.0650\",\"SGFXRQ\":\"20251015\",\"FXPL1\":12,\"XGFXRQ\":\"20261015\"}],\"quotes\":true,\"as_of\":20260808,\"timeout_ms\":10000,\"overrides\":{}}"
+    },
+    {
+      "id": "formula-cloud-calc-live-post",
+      "action": "formula-cloud-calc",
+      "body": "{\"cfg\":\"func_kzz_kzzsy101\",\"row\":{\"$ZQDM\":\"110075\",\"$SC\":\"1\",\"MZ\":100,\"ZGJ\":6.17,\"$ZQDM1\":\"600029\",\"$SC1\":\"1\",\"XXCFBL\":85,\"HSCFBL\":70,\"QSCFBL\":130,\"QXRQ\":\"20201015\",\"DQRQ\":\"20261015\",\"SYNX\":0.192,\"SYNXSYL\":0.014769,\"LLLXBZ\":3,\"SYFXCS\":1,\"SYFXLLXL\":\"0.0650\",\"SGFXRQ\":\"20251015\",\"FXPL1\":12,\"XGFXRQ\":\"20261015\"},\"quotes\":true,\"as_of\":20260808,\"timeout_ms\":10000,\"overrides\":{}}"
+    },
+    {
+      "id": "formula-colorref-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_COLORREF\",\"source\":\"RED:CLOSE,COLORRED;GREEN:CLOSE,COLORGREEN;CUSTOM:CLOSE,COLOR00C0C0;RGBX:CLOSE,RGBX1AAE52;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-contract-multiplier-live",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"47\",\"code\":\"IFL9\",\"formula\":\"CONTRACT_MULTIPLIER\",\"source\":\"合约乘数:MULTIPLIER;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":60,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-custom-core-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_CUSTOM_CORE\",\"source\":\"SEQ:=TOTALBARSCOUNT-CURRBARSCOUNT+1;YR:YEAR;MO:MONTH;DY:DAY;WD:WEEKDAY;BS:BARSTATUS;TB:TOTALBARSCOUNT;RAW:CLOSE;FIXED:CONST(CLOSE);BACK2:REF(CLOSE,2);CA:CONSTA(CLOSE,2);R2:ROUND2(1.235,2);EV:EXISTR(SEQ=117 OR SEQ=119,3,1);IN:RANGE(CLOSE,0,100000);FR:FRACPART(CLOSE);SG:SIGN(CLOSE);TRIG:ACOS(0)+ASIN(0)+ATAN(1)+COS(0)+SIN(0)+TAN(0);MD:MACHINEDATE;MT:MACHINETIME();MW:MACHINEWEEK;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-directional-bars-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_DIRECTIONAL_BARS\",\"source\":\"DH:DHIGH;DHF:DHIGH();DO:DOPEN;DL:DLOW;DC:DCLOSE;DV:DVOL;R:VOL;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":true,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-drawcframe-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_DRAWCFRAME\",\"source\":\"DRAWTEXT(ISLASTBAR,LOW,'FRAME'),COLORRED,DRAWCFRAME;DRAWTEXT_FIX(ISLASTBAR,0.1,0.1,0,'FIXED'),COLORBLUE,DRAWCFRAME;DRAWNUMBER_FIX(ISLASTBAR,0.2,0.2,0,CLOSE),COLORGREEN,DRAWCFRAME;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-drawicon-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_DRAWICON\",\"source\":\"DRAWICON(1,LOW,49);DRAWICON(ISLASTBAR,HIGH,51),DRAWABOVE;X:CLOSE;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-drawnumber-dif-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_DRAWNUMBER_DIF\",\"source\":\"DRAWNUMBER_DIF(CURRBARSCOUNT<=10,2,11,4),COLORGREEN,DRAWABOVE;DRAWNUMBER_DIF(CURRBARSCOUNT=20,1,1,3),COLORRED;DRAWNUMBER_DIF(CURRBARSCOUNT=25,0,7,2),COLORBLUE;X:CLOSE;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-explicit-context-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_EXPLICIT_CONTEXT\",\"source\":\"AMO0:L2_AMO(0,2);FLOW:LARGEINTRDVOL-LARGEOUTTRDVOL;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false,\"context\":{\"series\":{\"L2_AMO#0#2\":{\"2026-08-05|15:00\":123456},\"LARGEINTRDVOL\":{\"2026-08-05|15:00\":300},\"LARGEOUTTRDVOL\":{\"2026-08-05|15:00\":120}}}}"
+    },
+    {
+      "id": "formula-context-import-post",
+      "action": "formula-context-import",
+      "body": "{\"template\":{\"schema\":\"tdx-formula-explicit-context-v1\",\"automatic_market_context\":false,\"formula_scalar_bindings\":{},\"series\":{\"SIGNALS_QS#102#0\":{\"2026-08-14|15:00\":null}},\"_template\":{\"schema\":\"tdx-formula-explicit-context-template-v1\",\"binding_count\":1,\"scalar_binding_count\":0,\"series_binding_count\":1,\"stamp_count\":1,\"bindings\":[{\"name\":\"SIGNALS_QS#102#0\",\"source_kind\":\"broker-private\",\"value_shape\":\"date-time-series\",\"required\":true}]}},\"capture\":{\"schema\":\"tdx-formula-caller-context-capture-v1\",\"capture_id\":\"contract-owned-001\",\"ownership_confirmed\":true,\"formula_scalar_bindings\":{},\"records\":[{\"stamp\":\"2026-08-14|15:00\",\"values\":{\"SIGNALS_QS#102#0\":42}}]},\"allow_partial\":false}"
+    },
+    {
+      "id": "formula-context-import-partial-post",
+      "action": "formula-context-import",
+      "body": "{\"template\":{\"schema\":\"tdx-formula-explicit-context-v1\",\"automatic_market_context\":false,\"formula_scalar_bindings\":{},\"series\":{\"SIGNALS_QS#102#0\":{\"2026-08-14|15:00\":null}},\"_template\":{\"schema\":\"tdx-formula-explicit-context-template-v1\",\"binding_count\":1,\"scalar_binding_count\":0,\"series_binding_count\":1,\"stamp_count\":1,\"bindings\":[{\"name\":\"SIGNALS_QS#102#0\",\"source_kind\":\"broker-private\",\"value_shape\":\"date-time-series\",\"required\":true}]}},\"capture\":{\"schema\":\"tdx-formula-caller-context-capture-v1\",\"capture_id\":\"contract-owned-partial\",\"ownership_confirmed\":true,\"formula_scalar_bindings\":{},\"records\":[{\"stamp\":\"2026-08-14|15:00\",\"values\":{}}]},\"allow_partial\":true}"
+    },
+    {
+      "id": "formula-fscage-number-live",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"FSCAGE\",\"formula_kind\":\"technical\",\"period\":\"day\",\"pages\":1,\"page_size\":120,\"date\":\"all\",\"allow_future\":false,\"point_in_time_finance\":false,\"context\":{\"automatic_market_context\":false,\"finance\":{\"3\":1},\"dynainfo\":{\"26\":11.5,\"27\":9.5,\"28\":11.41,\"29\":10.96}}}"
+    },
+    {
+      "id": "formula-host-summary-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_HOST_SUMMARY\",\"source\":\"BETA:BETAVALUE;S1:SHAPE_SHORT;S2:SHAPE_MID();S3:SHAPE_LONG;PE:HYSYL;PB:HYSJL();M0:MAINZSHQ(1,0);M1:MAINZSHQ(1,1);M2:MAINZSHQ(1,2);M3:MAINZSHQ(1,3);M4:MAINZSHQ(1,4);M5:MAINZSHQ(1,5);M6:MAINZSHQ(1,6);M7:MAINZSHQ(1,7);M8:MAINZSHQ(1,8);M9:MAINZSHQ(1,9);T1:TOTALHQINFO(1);T2:TOTALHQINFO(2);T3:TOTALHQINFO(3);T4:TOTALHQINFO(4);T5:TOTALHQINFO(5);T6:TOTALHQINFO(6);A1:TOTALMMPAMO(1);A2:TOTALMMPAMO(2);A3:TOTALMMPAMO(3);A4:TOTALMMPAMO(4);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-inline-backtest-post",
+      "action": "formula-backtest",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_EXPERT\",\"source\":\"MID:=MA(CLOSE,N);ENTERLONG:TQFLAG=1 AND CROSS(CLOSE,MID);EXITLONG:TQFLAG()=1 AND CROSS(MID,CLOSE);\",\"parameters\":{\"N\":10},\"period\":\"day\",\"adjust\":\"qfq\",\"pages\":1,\"page_size\":240,\"point_in_time_finance\":false,\"initial_capital\":100000,\"commission_bps\":2.5,\"slippage_bps\":1}"
+    },
+    {
+      "id": "formula-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_INLINE\",\"source\":\"FAST:EMA(CLOSE,12)-EMA(CLOSE,26);SIGNAL:EMA(FAST,9);HIST:(FAST-SIGNAL)*2,COLORSTICK;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-inline-scan-post",
+      "action": "formula-scan",
+      "body": "{\"formula\":\"CONTRACT_SELECT\",\"source\":\"RESULT:TQFLAG=1 AND CLOSE>MA(CLOSE,N);\",\"parameters\":{\"N\":5},\"codes\":\"sz000001,sh600000\",\"period\":\"day\",\"adjust\":\"qfq\",\"pages\":1,\"page_size\":120,\"workers\":2,\"lookback\":10,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-kline-auxiliary-fields-live",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"47\",\"code\":\"IFL9\",\"formula\":\"CONTRACT_KLINE_AUXILIARY\",\"source\":\"分时均价:ZSTJJ;结算价:QHJSJ;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":60,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-library-context-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"ZJLX\",\"formula_kind\":\"technical\",\"period\":\"day\",\"pages\":1,\"page_size\":120,\"date\":\"all\",\"allow_future\":false,\"point_in_time_finance\":false,\"context\":{\"schema\":\"tdx-formula-explicit-context-v1\",\"automatic_market_context\":false,\"series\":{\"L2_AMO#0#2\":{\"2026-08-07|15:00\":1000000},\"L2_AMO#0#3\":{\"2026-08-07|15:00\":2000000},\"L2_AMO#1#2\":{\"2026-08-07|15:00\":3000000},\"L2_AMO#1#3\":{\"2026-08-07|15:00\":4000000},\"L2_AMO#2#2\":{\"2026-08-07|15:00\":5000000},\"L2_AMO#2#3\":{\"2026-08-07|15:00\":6000000},\"L2_AMO#3#2\":{\"2026-08-07|15:00\":7000000},\"L2_AMO#3#3\":{\"2026-08-07|15:00\":8000000}}}}"
+    },
+    {
+      "id": "formula-market-breadth-dyna-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_MARKET_BREADTH_DYNA\",\"source\":\"IA:INDEXADV;IAC:INDEXADV();ID:INDEXDEC;IDC:INDEXDEC();N:DYNA_NOW;NC:DYNA_NOW();Z:DYNA_ZAF;L:DYNA_LB();S:DYNA_ZAS;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-mixed-render-order-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_MIXED_ORDER\",\"source\":\"A:=MA(CLOSE,2);STICKLINE(1,LOW,HIGH,2,0),COLORGRAY;X:CLOSE,COLORRED;DRAWICON(ISLASTBAR,HIGH,1),DRAWABOVE;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-native-series-styles-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_NATIVE_SERIES_STYLES\",\"source\":\"BASE:CLOSE;DOTTED:IF(CURRBARSCOUNT=1 OR CURRBARSCOUNT=3,CLOSE,DRAWNULL),DOTLINE,LINETHICK2,COLORRED;STEM:CLOSE,STICK,COLORGREEN;BOTH:CLOSE,LINESTICK,COLORBLUE;CIRCLE:CLOSE,CIRCLEDOT,COLORCYAN;CROSS:CLOSE,CROSSDOT,COLORYELLOW;POINT:CLOSE,POINTDOT,LINETHICK3,COLORMAGENTA;LASTDOT:CLOSE,COLORSTICK,DOTLINE;LASTCOLOR:CLOSE,DOTLINE,COLORSTICK;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-price-annotations-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_PRICE_ANNOTATIONS\",\"source\":\"DRAWTEXT(ISLASTBAR,LOW,'A&&B'),COLORRED;DRAWTEXT(ISLASTBAR,HIGH,'UP&NEXT'),COLORGREEN,DRAWABOVE;DRAWNUMBER(ISLASTBAR,CLOSE,12.34),COLORBLUE;DRAWNUMBER(ISLASTBAR,OPEN,56.78),COLORYELLOW,DRAWABOVE;DRAWTEXT(0.5,CLOSE,'FILTERED');DRAWNUMBER(ISLASTBAR,DRAWNULL,1.23);X:CLOSE;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-random-security-score-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_RANDOM_SECURITY_SCORE\",\"source\":\"R:RAND(10);SAFE:SAFESCORE();SHINE:SHINESCORE();\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false,\"context\":{\"formula_random_seed\":1}}"
+    },
+    {
+      "id": "formula-rolling-variance-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_ROLLING_VARIANCE\",\"source\":\"SEQ:=TOTALBARSCOUNT-CURRBARSCOUNT+1;X:=IF(SEQ=1,1,IF(SEQ=2,2,IF(SEQ=3,8,IF(SEQ=4,16,IF(SEQ=5,4,SEQ*4)))));RV:REFV(X,IF(SEQ=3,5,1));MU:MULAR(X,2);AM:AMA(X,0.25);HR:HOD(X,3);LR:LOD(X,3);HV:HHVLLV(X,0,2,1);LV:HHVLLV(X,1,2,1);IV:ISVALID(VAR(X,3));IT:IFF(X>5,10,20);IN:IFN(X>5,10,20);N:NOT(X>5);MX:MAX6(1,6,2,5,3,4);MN:MIN6(1,6,2,5,3,4);DS:DEVSQ(X,3);VS:VAR(X,3);VP:VARP(X,3);SS:STD(X,3);SP:STDP(X,3);DV:STDDEV(X,3);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-security-relation-divfactor-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sh\",\"code\":\"110075\",\"formula\":\"CONTRACT_SECURITY_RELATION_DIVFACTOR\",\"source\":\"DPC:STRCMP(DPZSCODE,'999999');DPN:STRCMP(DPZSNAME(),'上证指数');UC:STRCMP(UNDERCODE,'600029');UCC:STRCMP(UNDERCODE(),'600029');U:UNDERLYC;U2:UNDERLYC();F:DIVFACTOR(1);H:DIVFACTOR(2);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-security-status-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_SECURITY_STATUS\",\"source\":\"T0:IST0CODE;ST:ISSTCODE;QUIT:ISQUITCODE;QHQQ:ISQHQQCODE;JY:ISJYDATE;LD:LOCALDAYNUM;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-security-string-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_SECURITY_STRING\",\"source\":\"SEQ:=TOTALBARSCOUNT-CURRBARSCOUNT+1;N0:NAMELIKE('平安');N1:NAMELIKE('银行');C0:CODELIKE('000');C1:CODELIKE('600');I0:NAMEINCLUDE('银行');I1:NAMEINCLUDE('证券');F0:FINDSTR('多头开仓','开仓');F1:FINDSTR('多头开仓','平仓');S0:STR2CON('2365.02');S1:STR2CON('BAD');U:UPDOWN(SEQ);Z:NOT(SEQ);DRAWTEXT_FIX(ISLASTBAR,0,0,0,STKNAME);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-sequence-statistics-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_SEQUENCE_STATS\",\"source\":\"SEQ:=TOTALBARSCOUNT-CURRBARSCOUNT+1;SIG:=SEQ=117 OR SEQ=119;BL:BARSLASTS(SIG,2);BSN:BARSSINCEN(SIG,5);FX:FILTERX(SIG,2);TM:TMA(SEQ,0.5,0.5);XM:XMA(SEQ,3);CV:COVAR(SEQ,SEQ*2+1,5);RL:RELATE(SEQ,SEQ*2+1,5);BE:BETAEX(SEQ,SEQ*2+1,5);FH:FINDHIGH(SEQ,1,5,2);FHB:FINDHIGHBARS(SEQ,1,5,2);FL:FINDLOW(SEQ,1,5,2);FLB:FINDLOWBARS(SEQ,1,5,2);FT:FFTRANS(SEQ,4);NS:NEWSAR(10,2);LF:LFS();\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":true,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-series-sticks-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_SERIES_STICKS\",\"source\":\"COLOR:IF(CURRBARSCOUNT=1,1,-1),COLORSTICK;VOLUME:VOL,VOLSTICK;\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-single-point-data-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_SINGLE_POINT_DATA\",\"source\":\"F:FINONE(183,0,0);G:GPJYONE(1,1,0,0);B:BKJYONE(5,1,0,0);S:SCJYONE(1,1,0,0);P:GPONEDAT(7);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-strategy-backtest-post",
+      "action": "formula-strategy-backtest",
+      "body": "{\"strategy\":{\"code\":\"CONTRACT_STRATEGY\",\"name\":\"同周期双条件\",\"operator\":\"all\",\"rules\":[{\"id\":\"trend\",\"source\":\"RESULT:TQFLAG=1 AND CLOSE>MA(CLOSE,N);\",\"parameters\":{\"N\":5}},{\"id\":\"momentum\",\"source\":\"RESULT:TQFLAG()=1 AND CLOSE>REF(CLOSE,M);\",\"parameters\":{\"M\":3}}]},\"codes\":\"sz000001,sh600000\",\"period\":\"day\",\"adjust\":\"qfq\",\"pages\":1,\"page_size\":240,\"workers\":2,\"point_in_time_finance\":false,\"initial_capital\":100000,\"commission_bps\":2.5,\"slippage_bps\":1}"
+    },
+    {
+      "id": "formula-strategy-scan-post",
+      "action": "formula-strategy-scan",
+      "body": "{\"strategy\":{\"code\":\"CONTRACT_STRATEGY\",\"name\":\"同周期双条件\",\"operator\":\"all\",\"rules\":[{\"id\":\"trend\",\"source\":\"RESULT:TQFLAG=1 AND CLOSE>MA(CLOSE,N);\",\"parameters\":{\"N\":5}},{\"id\":\"momentum\",\"source\":\"RESULT:TQFLAG()=1 AND CLOSE>REF(CLOSE,M);\",\"parameters\":{\"M\":3}}]},\"codes\":\"sz000001,sh600000\",\"period\":\"day\",\"adjust\":\"qfq\",\"pages\":1,\"page_size\":120,\"workers\":2,\"lookback\":10,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-string-builders-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_STRING_BUILDERS\",\"source\":\"SEQ:=TOTALBARSCOUNT-CURRBARSCOUNT+1;L:STRLEN('通达信');S0:STRCMP(SUBSTR('通达信',3,2),'达');S1:STRCMP(SUBSTR('ABC',99,1),'C');S2:STRCMP(STRSPACE('A'),'A ');S3:STRCMP(STRCAT6('A','B','C','D','E','F'),'ABCDEF');S4:STRCMP(VARCAT('A','B'),'AB');S5:STRCMP(VARCAT6('A','B','C','D','E','F'),'ABCDEF');N:STR2CON(SUBSTR('2365.02',1,7));DRAWTEXT(1,LOW,VARCAT6(VAR2STR(SEQ,0),'|',CON2STR(SEQ,0),'|',STRSPACE(SUBSTR('通达信',3,2)),STKNAME));DRAWTEXT(1,HIGH,STRCAT6(VAR2STR(SEQ,0),'|',CON2STR(SEQ,0),'|',STRSPACE('定'),'值'));\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-type167-text-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_TYPE167_TEXT\",\"source\":\"L:STRCMP(LEVEL1HYBLOCK,'银行');M:STRCMP(MAINBUSINESS,'零售金融业务');H:STRCMP(MOREHYBLOCK,'股份制银行');Z:STRCMP(ZDBLOCK,' ');N:ZDBLOCKNUM;Q:STRCMP(ZHBLOCK,' ');R:ZHBLOCKNUM;S:STRCMP(SIMIBLOCK,' ');DRAWTEXT_FIX(ISLASTBAR,0,0,0,STRCAT(MOREHYBLOCK,ZDBLOCK));\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":false,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-ziga-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_ZIGA\",\"source\":\"R:CLOSE;Z:ZIGA(CLOSE,1);S:ZIGA(3,1);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":120,\"allow_future\":true,\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "formula-future-replay-inline-post",
+      "action": "formula-evaluate",
+      "body": "{\"market\":\"sz\",\"code\":\"000001\",\"formula\":\"CONTRACT_FUTURE_REPLAY\",\"source\":\"B:BARSNEXT(ISLASTBAR);\",\"parameters\":{},\"period\":\"day\",\"pages\":1,\"page_size\":8,\"allow_future\":true,\"future_replay\":{\"max_observations\":3,\"max_events\":100},\"point_in_time_finance\":false}"
+    },
+    {
+      "id": "tpool-inline-evaluate-post",
+      "action": "pool-evaluate",
+      "body": "{\"source_name\":\"contract-inline.xml\",\"xml\":\"<root><flows><flow startid=\\\"1\\\" endid=\\\"2\\\" tran=\\\"1\\\" starttype=\\\"0\\\" cxtype=\\\"2\\\" /></flows><cells><cell id=\\\"1\\\"><func ntjindexno=\\\"1\\\" accode=\\\"MACD\\\" nperiod=\\\"4\\\" nfirst=\\\"0\\\" cfirst=\\\"DIF\\\" noperate=\\\"1\\\" nsecond=\\\"-1\\\" fsecond=\\\"-999999\\\" nperiodnum=\\\"120\\\" /><stk setcode=\\\"0\\\" code=\\\"000001\\\" /></cell><cell id=\\\"2\\\" type=\\\"8\\\"><psatt bdel=\\\"0\\\" ndelnum=\\\"0\\\" ndeltype=\\\"0\\\" baimpool=\\\"1\\\" bsound=\\\"1\\\" nsoundtype=\\\"0\\\" soundfile=\\\"\\\" btip=\\\"0\\\" bsavetoblock=\\\"1\\\" blockfile=\\\"contract_watch\\\" bclearblock=\\\"1\\\" bsavehis=\\\"0\\\" /></cell></cells></root>\",\"pages\":1,\"page_size\":160,\"timeout_ms\":10000,\"limit\":1}"
+    }
+  ]
+}

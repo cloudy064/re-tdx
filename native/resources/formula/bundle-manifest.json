@@ -1,0 +1,20 @@
+{
+  "schema": "tdx-formula-bundle-v1",
+  "version": "2026-08-14",
+  "library": {
+    "file": "formulas.json",
+    "sha256": "3056d79ed54af645c28ae7f769447af20990ea1524852293f1aef182118bbc05",
+    "formula_count": 379,
+    "source_text_count": 379
+  },
+  "icons": {
+    "manifest_file": "drawicon-manifest.json",
+    "manifest_sha256": "7f5fb026b751dead152ca1e75f6d3cc59956496ba1904fa3dc9d9f53ac6240a9",
+    "png_file": "drawicon-strip.png",
+    "png_sha256": "a88d79fc1cb0ab8b1338c7923debecc86fb8d7b71cc85554a3512bb4a6d3e861",
+    "bitmap_file": "drawicon-strip.bmp",
+    "bitmap_sha256": "f9c53e0324886351c1e0e4a465249627e29d27d94ac29f8cd1fc862fdf388e18"
+  },
+  "runtime_dll_required": false,
+  "network_required": false
+}

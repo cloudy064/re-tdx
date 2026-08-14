@@ -1,0 +1,88 @@
+# Local agent and editor state
+/.agents/
+/.claude/
+/.idea/
+/.vscode/
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Native build outputs
+**/build/
+**/dist/
+*.exe
+*.exe~
+*.dll
+*.dylib
+*.so
+*.sys
+*.pdb
+*.lib
+*.obj
+*.o
+*.test
+
+# Frontend dependencies and local Vite state
+**/node_modules/
+**/.vite/
+
+# IDA databases and generated reverse-engineering work
+/ida/
+!ida/.gitkeep
+*.idb
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.dmp
+*.asm
+*.lst
+
+# Runtime captures and private session material
+/captures/
+/doc/captures/*
+!/doc/captures/README.md
+*.bin
+*.pcap
+*.pcapng
+**/login-frame.bin
+**/session.json
+**/value-*.bin
+**/private-evidence/
+
+# Logs, scratch output, and temporary files
+/output/
+/reg_base/
+/reg_new/
+/reg_*.json
+/ida-gbk-label-xrefs.json
+/-
+/$log
+/err.txt
+/out.txt
+/*.log
+/*.err
+/*.out
+*.log
+*.err
+*.out
+*.pid
+*.tmp
+*.temp
+*.bak
+*~
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

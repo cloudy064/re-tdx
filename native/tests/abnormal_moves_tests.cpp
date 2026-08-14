@@ -1,0 +1,5 @@
+#include "tdx/abnormal_moves.hpp"
+#include "tdx/common.hpp"
+#include <cmath>
+#include <iostream>
+int main(){try{tdx::BlockData b;b.securities[{0,"000657"}]=tdx::Security{0,"SZ","深圳","000657","中钨高新"};tdx::Json rows=tdx::Json::array();rows.push_back(tdx::Json::parse("{\"SetCode\":\"0\",\"Code\":\"000657\",\"Name\":\"\",\"Type\":\"101\",\"SubType\":\"3001\",\"LastIn\":\"1\",\"ResultRight\":\"1\",\"Time\":\"15:00\",\"Zdf\":\"10.00\",\"Now\":\"57.43\",\"Hsl\":\"5.70\",\"Zaf\":\"10.38\",\"Amo\":\"4590736384\",\"Vol\":\"828989\",\"zlje\":\"-46441520\",\"zlje5d\":\"1339450880\"}"));auto r=tdx::normalize_abnormal_move_rows(rows,b);if(r.size()!=1||r.as_array()[0].at("security").at("name").as_string()!="中钨高新"||r.as_array()[0].at("anomaly").at("name").as_string()!="涨幅偏离较高"||r.as_array()[0].at("time").as_string()!="15:00:00"||std::abs(r.as_array()[0].at("main_net_inflow").as_number()+46441520)>0.1)throw tdx::Error("abnormal move normalization failed");std::cout<<"abnormal moves tests passed\n";return 0;}catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

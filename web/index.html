@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0d0f12" />
+    <meta name="description" content="TDX 工作台 · 本地行情与数据研究终端" />
+    <script>
+      // 在首帧前落主题，避免深色环境下的白屏闪烁。
+      // 本机离线工具，不引任何外部字体或资源。
+      (() => {
+        try {
+          const stored = localStorage.getItem('tdx.theme');
+          const theme = stored === 'light' ? 'light' : 'dark';
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (_) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
+    <title>TDX 工作台</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
