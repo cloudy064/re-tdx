@@ -122,11 +122,11 @@ std::vector<MinuteBar> parse_kline_payload(const Bytes& payload, bool index_mode
         bar.high = static_cast<float>(high_milli / 1000.0);
         bar.low = static_cast<float>(low_milli / 1000.0);
         bar.amount = static_cast<float>(amount_value);
-        const auto rounded_volume = std::llround(volume_value);
-        if (rounded_volume < std::numeric_limits<std::int32_t>::min() ||
-            rounded_volume > std::numeric_limits<std::int32_t>::max())
-            throw Error("K-line volume exceeds int32");
-        bar.volume = static_cast<std::int32_t>(rounded_volume);
+        // Check before llround: floating wire values may exceed int64 too.
+        if (!std::isfinite(volume_value) || volume_value < 0.0 ||
+            volume_value >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+            throw Error("K-line volume exceeds nonnegative int64");
+        bar.volume = std::llround(volume_value);
         if (index_mode) {
             if (offset + 4 > payload.size()) throw Error("index K-line has no breadth fields");
             bar.extra_1 = read_u16_le(payload.data() + offset);
@@ -183,9 +183,7 @@ std::vector<MinuteBar> parse_expansion_kline_payload(const Bytes& payload,
         bar.amount_available = false;
         bar.open_interest = read_u32_le(row + 20);
         const auto volume = read_u32_le(row + 24);
-        if (volume > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
-            throw Error("expansion K-line volume exceeds int32");
-        bar.volume = static_cast<std::int32_t>(volume);
+        bar.volume = static_cast<std::int64_t>(volume);
         bar.auxiliary_price = read_f32_le(row + 28);
         bar.has_expansion_fields = true;
         for (float value : {bar.open, bar.high, bar.low, bar.close, bar.auxiliary_price})
@@ -450,6 +448,8 @@ Bytes pack_lc1(const std::vector<MinuteBar>& bars) {
     for (const auto& bar : bars) {
         if (bar.has_expansion_fields)
             throw Error("LC1 cannot preserve expansion-market open-interest/auxiliary fields");
+        if (bar.volume < 0 || bar.volume > std::numeric_limits<std::uint32_t>::max())
+            throw Error("LC1 volume exceeds uint32 storage range");
         append_u16(result, encode_lc1_date(bar.date));
         append_u16(result, static_cast<std::uint16_t>(bar.hour * 60 + bar.minute));
         append_float(result, bar.open);

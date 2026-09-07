@@ -21,7 +21,8 @@ struct MinuteBar {
     float close{};
     float amount{};
     bool amount_available{true};
-    std::int32_t volume{};
+    // Aggregated online daily/weekly volumes can exceed either 32-bit range.
+    std::int64_t volume{};
     std::uint16_t extra_1{};
     std::uint16_t extra_2{};
     std::uint32_t open_interest{};

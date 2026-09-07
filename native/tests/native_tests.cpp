@@ -372,6 +372,30 @@ int main() {
         require(daily_bars[0].hour == 15 && daily_bars[0].minute == 0,
                 "daily K-line display time");
 
+        const auto large_volume_wire = [](std::uint32_t encoded) {
+            tdx::Bytes value; append_u16(value, 1); append_u32(value, 20260907);
+            for (int price : {10000, 0, 0, 0}) append_varint(value, price);
+            append_u32(value, encoded); append_u32(value, 0); return value;
+        };
+        auto large_bars = tdx::parse_kline_payload(large_volume_wire(0x4F400000), false, 4);
+        require(large_bars[0].volume == 3221225472LL, "online daily volume above signed int32");
+        require(tdx::parse_lc1(tdx::pack_lc1(large_bars))[0].volume == 3221225472LL,
+                "LC1 unsigned volume roundtrip above signed int32");
+        large_bars = tdx::parse_kline_payload(large_volume_wire(0x50400000), false, 4);
+        require(large_bars[0].volume == 12884901888LL, "online volume above uint32 remains intact");
+        bool rejected_large_lc1 = false;
+        try { (void)tdx::pack_lc1(large_bars); } catch (const tdx::Error&) { rejected_large_lc1 = true; }
+        require(rejected_large_lc1, "LC1 export rejects rather than wraps unrepresentable volume");
+        bool rejected_huge_volume = false;
+        try { (void)tdx::parse_kline_payload(large_volume_wire(0x5F000000), false, 4); }
+        catch (const tdx::Error&) { rejected_huge_volume = true; }
+        require(rejected_huge_volume, "wire volume above int64 rejected before rounding");
+        tdx::Bytes expansion(18, 0); append_u16(expansion, 1); append_u32(expansion, 20260907);
+        for (int n = 0; n < 4; ++n) append_float(expansion, 10.0f);
+        append_u32(expansion, 1); append_u32(expansion, 0xFFFFFFFF); append_float(expansion, 10.0f);
+        require(tdx::parse_expansion_kline_payload(expansion, 4)[0].volume == 4294967295LL,
+                "expansion volume preserves full unsigned wire range");
+
         std::vector<tdx::MinuteBar> paged_bars(5);
         paged_bars[0].date = 20260810;
         paged_bars[0].hour = 9;

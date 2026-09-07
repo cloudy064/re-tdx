@@ -63,7 +63,7 @@ std::vector<MinuteBar> parse_lc1(const Bytes& data) {
         bar.low = read_f32_le(row + 12);
         bar.close = read_f32_le(row + 16);
         bar.amount = read_f32_le(row + 20);
-        bar.volume = read_i32_le(row + 24);
+        bar.volume = read_u32_le(row + 24);
         bar.extra_1 = read_u16_le(row + 28);
         bar.extra_2 = read_u16_le(row + 30);
         if (bar.hour < 0 || bar.hour > 23 || bar.minute < 0 || bar.minute > 59)
