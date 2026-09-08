@@ -69,6 +69,7 @@
 
 | 任务 | 入口 |
 |---|---|
+| 查看最终请求通达信的地址、命令号、用途、输入和输出 | [通达信上游 API 调用速查](API.md) |
 | 了解二进制基本信息 | [模块地图](01-recon/03-module-map.md) |
 | 确认工具链可用 | [工具链与环境](00-overview/03-toolchain-environment.md) |
 | 开始静态分析 | IDA 打开 `ida/TdxW.exe.i64`，参考 [攻坚任务 Phase 2](06-next-steps/01-tdx-attack-plan.md#phase-2-静态分析) |

@@ -10,6 +10,8 @@
 
 更完整的文档入口见 [doc/README.md](doc/README.md)。
 
+通达信上游请求的地址、用途、输入和输出见 [通达信上游 API 调用速查](doc/API.md)。
+
 建议从以下顺序恢复项目上下文：
 
 1. [当前状态与证据边界](doc/00-overview/04-current-state.md)；
