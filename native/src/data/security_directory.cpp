@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -21,6 +22,11 @@ namespace {
 constexpr std::uint16_t type_security_list = 0x044D;
 constexpr std::uint16_t type_security_count = 0x044E;
 constexpr std::size_t record_size = 37;
+
+// A caller's cancellation is not a provider/transport error, even when its
+// message resembles a transient socket failure. Cross the generic retry
+// helper without being caught there, then restore the original exception.
+struct DirectoryCheckInterrupted { std::exception_ptr cause; };
 
 void append_u16(Bytes& output, std::uint16_t value) {
     output.push_back(static_cast<std::uint8_t>(value));
@@ -270,6 +276,12 @@ std::vector<SecurityDirectoryRecord> parse_security_directory_page(
 
 SecurityDirectoryService::MarketCache SecurityDirectoryService::fetch_market(
     int id, const SecurityDirectoryQuery& options) {
+    if (options.check) options.check();
+    const auto check = [&] {
+        if (!options.check) return;
+        try { options.check(); }
+        catch (...) { throw DirectoryCheckInterrupted{std::current_exception()}; }
+    };
     auto hosts = options.hosts;
     if (hosts.empty() && !trim(options.endpoint).empty())
         hosts.push_back(trim(options.endpoint));
@@ -277,15 +289,19 @@ SecurityDirectoryService::MarketCache SecurityDirectoryService::fetch_market(
     std::vector<std::string> failures;
     int connection_attempts = 0, transient_retries = 0, endpoints_attempted = 0;
     for (const auto& endpoint : endpoint_selection.endpoints) {
+        if (options.check) options.check();
         ++endpoints_attempted;
         int attempts = 0;
         MarketCache result;
         bool completed = false;
         try {
             detail::retry_quote_transport([&] {
+                check();
                 QuoteConnection connection(endpoint, options.timeout_ms);
+                check();
                 const auto count_response = connection.call(
                     type_security_count, count_request(id));
+                check();
                 if (count_response.data.size() < 2)
                     throw Error("security-directory count response is too short");
                 const auto reported = read_u16_le(count_response.data.data());
@@ -296,10 +312,12 @@ SecurityDirectoryService::MarketCache SecurityDirectoryService::fetch_market(
                 candidate.records.reserve(reported);
                 std::uint32_t start = 0;
                 while (start < reported) {
+                    check();
                     const auto requested = static_cast<std::uint32_t>(std::min<int>(
                         options.page_size, static_cast<int>(reported - start)));
                     const auto response = connection.call(
                         type_security_list, list_request(id, start, requested));
+                    check();
                     auto page = parse_security_directory_page(response.data, id);
                     if (page.empty()) break;
                     start += static_cast<std::uint32_t>(page.size());
@@ -313,11 +331,16 @@ SecurityDirectoryService::MarketCache SecurityDirectoryService::fetch_market(
                         std::to_string(candidate.records.size()) + "/" +
                         std::to_string(reported));
                 candidate.fetched_at = std::time(nullptr);
+                check();
                 result = std::move(candidate);
                 return true;
             }, attempts);
+            check();
             completed = true;
+        } catch (const DirectoryCheckInterrupted& interrupted) {
+            std::rethrow_exception(interrupted.cause);
         } catch (const std::exception& error) {
+            if (options.check) options.check();
             failures.push_back(endpoint.address() + ": " + error.what());
         }
         connection_attempts += attempts;
@@ -336,16 +359,20 @@ SecurityDirectoryService::MarketCache SecurityDirectoryService::fetch_market(
 
 const SecurityDirectoryService::MarketCache& SecurityDirectoryService::ensure_market(
     int id, const SecurityDirectoryQuery& options) {
+    if (options.check) options.check();
     const auto found = caches_.find(id);
     const auto now = std::time(nullptr);
     if (!options.refresh && found != caches_.end() && found->second.fetched_at &&
         now - found->second.fetched_at < options.cache_ttl_seconds)
         return found->second;
-    caches_[id] = fetch_market(id, options);
+    auto downloaded = fetch_market(id, options);
+    if (options.check) options.check();
+    caches_[id] = std::move(downloaded);
     return caches_.at(id);
 }
 
 Json SecurityDirectoryService::query(const SecurityDirectoryQuery& options) {
+    if (options.check) options.check();
     if (options.limit < 1 || options.limit > 100000)
         throw Error("limit must be in 1..100000");
     if (options.page_size < 1 || options.page_size > 1700)
@@ -364,6 +391,7 @@ Json SecurityDirectoryService::query(const SecurityDirectoryQuery& options) {
     else markets = {market_id(options.market)};
 
     std::lock_guard<std::mutex> guard(mutex_);
+    if (options.check) options.check();
     std::vector<const SecurityDirectoryRecord*> matches;
     std::vector<const SecurityDirectoryRecord*> exact;
     std::map<std::string, std::uint64_t> category_counts;
@@ -371,7 +399,9 @@ Json SecurityDirectoryService::query(const SecurityDirectoryQuery& options) {
     const auto folded = lower_ascii(trim(options.query));
     std::uint64_t available = 0;
     for (const auto id : markets) {
+        if (options.check) options.check();
         const auto& cache = ensure_market(id, options);
+        if (options.check) options.check();
         available += cache.records.size();
         Json source = Json::object();
         source["market"] = market_name(id);
@@ -416,6 +446,7 @@ Json SecurityDirectoryService::query(const SecurityDirectoryQuery& options) {
     result["summary"] = std::move(summary);
     result["sources"] = std::move(sources);
     result["securities"] = std::move(rows);
+    if (options.check) options.check();
     return result;
 }
 

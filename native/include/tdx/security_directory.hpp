@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -41,6 +42,9 @@ struct SecurityDirectoryQuery {
     int page_size{1600};
     int cache_ttl_seconds{3600};
     int timeout_ms{15000};
+    // Optional caller cancellation/session gate. Empty preserves ordinary
+    // initial/manual reads; exceptions abort paging/retries without caching.
+    std::function<void()> check;
 };
 
 std::vector<SecurityDirectoryRecord> parse_security_directory_page(

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <exception>
 #include <optional>
 #include <set>
 
@@ -20,11 +21,13 @@ namespace trades {
 TradeSeries download_one(QuoteConnection& connection, const SecurityCode& code,
                          const std::string& trading_date,
                          const std::string& server_trade_date,
-                         std::uint16_t page_size, int max_page_count) {
+                         std::uint16_t page_size, int max_page_count,
+                         const std::function<void()>& check) {
     std::vector<std::vector<TradeTick>> pages;
     std::uint32_t start = 0;
     std::optional<float> price_base;
     while (true) {
+        if (check) check();
         if (start > 0xFFFF) throw Error(security_id(code.market_id, code.code) +
                                        " trade cursor exceeds uint16");
         const auto cursor = static_cast<std::uint16_t>(start);
@@ -33,12 +36,14 @@ TradeSeries download_one(QuoteConnection& connection, const SecurityCode& code,
         if (trading_date.empty()) {
             response = connection.call(type_today_trades,
                 build_today_trades_request_data(code.market_id, code.code, cursor, page_size));
+            if (check) check();
             page = parse_today_trades_payload(response.data, code.market_id, code.code,
                                                cursor, page_size, server_trade_date);
         } else {
             response = connection.call(type_history_trades,
                 build_history_trades_request_data(code.market_id, code.code, trading_date,
                                                   cursor, page_size));
+            if (check) check();
             page = parse_history_trades_payload(response.data, code.market_id, code.code,
                                                  trading_date, cursor, page_size);
         }
@@ -78,7 +83,8 @@ Json fetch_market_trades_document(const fs::path& root,
                                   const std::string& raw_trading_date,
                                   int raw_page_size, int max_page_count,
                                   int timeout_ms, const BlockData* block_data,
-                                  const std::vector<std::string>& hosts) {
+                                  const std::vector<std::string>& hosts,
+                                  const std::function<void()>& check) {
     using detail::trades::SecurityCode;
     using detail::trades::download_one;
     using detail::trades::maximum_pages;
@@ -87,6 +93,16 @@ Json fetch_market_trades_document(const fs::path& root,
     using detail::trades::parse_security;
     using detail::trades::series_json;
     using detail::trades::type_heartbeat;
+
+    if (check) check();
+    // Cancellation is not a quote failure, even when a caller's exception
+    // contains wording that the transport would normally consider retryable.
+    // Pass it through both transport retries and endpoint failover unchanged.
+    struct Cancelled { std::exception_ptr cause; };
+    const auto guarded_check = [&] {
+        try { if (check) check(); }
+        catch (...) { throw Cancelled{std::current_exception()}; }
+    };
 
     if (securities.empty()) throw Error("at least one trade security is required");
     const auto trading_date = raw_trading_date.empty() ? std::string{} :
@@ -114,12 +130,16 @@ Json fetch_market_trades_document(const fs::path& root,
     int connection_attempts = 0, transient_retries = 0, endpoints_attempted = 0;
     for (const auto& endpoint : endpoint_selection.endpoints) {
         if (next >= codes.size()) break;
+        if (check) check();
         ++endpoints_attempted;
         int attempts = 0;
         try {
             detail::retry_quote_transport([&] {
+                guarded_check();
                 QuoteConnection connection(endpoint, timeout_ms);
+                guarded_check();
                 const auto heartbeat = connection.call(type_heartbeat);
+                guarded_check();
                 if (heartbeat.data.size() < 10)
                     throw Error("heartbeat has no server trade date");
                 server_trade_date = normalize_date(
@@ -127,14 +147,18 @@ Json fetch_market_trades_document(const fs::path& root,
                 while (next < codes.size()) {
                     series.push_back(download_one(
                         connection, codes[next], trading_date, server_trade_date,
-                        static_cast<std::uint16_t>(page_size_value), max_page_count));
+                        static_cast<std::uint16_t>(page_size_value), max_page_count,
+                        guarded_check));
                     ++next;
                     endpoint_used = endpoint.address();
                     server_name = connection.server_name();
                 }
                 return true;
             }, attempts);
+        } catch (const Cancelled& cancelled) {
+            std::rethrow_exception(cancelled.cause);
         } catch (const std::exception& error) {
+            if (check) check();
             failures.push_back(endpoint.address() + ": " + error.what());
         }
         connection_attempts += attempts;
@@ -146,6 +170,7 @@ Json fetch_market_trades_document(const fs::path& root,
         for (const auto& failure : failures) detail += "\n  " + failure;
         throw Error(detail);
     }
+    if (check) check();
     const auto loaded_blocks = block_data ? BlockData{} : load_blocks(root, {});
     const auto& names = block_data ? block_data->securities : loaded_blocks.securities;
     Json records = Json::array();
@@ -175,6 +200,7 @@ Json fetch_market_trades_document(const fs::path& root,
     document["status_note"] =
         "status=0/1/2 为买/卖/中性；深市 status=5 可表示 15:05—15:30 盘后定价成交";
     document["records"] = std::move(records);
+    if (check) check();
     return document;
 }
 

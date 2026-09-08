@@ -65,7 +65,8 @@ Json series_json(const TradeSeries& series,
 TradeSeries download_one(QuoteConnection& connection, const SecurityCode& code,
                          const std::string& trading_date,
                          const std::string& server_trade_date,
-                         std::uint16_t page_size, int max_page_count);
+                         std::uint16_t page_size, int max_page_count,
+                         const std::function<void()>& check = {});
 
 }  // namespace trades
 }  // namespace detail

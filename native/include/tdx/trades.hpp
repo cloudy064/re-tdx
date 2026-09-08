@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -75,7 +76,8 @@ Json fetch_market_trades_document(const std::filesystem::path& root,
                                   int page_size = 0, int max_pages = 100,
                                   int timeout_ms = 10000,
                                   const BlockData* block_data = nullptr,
-                                  const std::vector<std::string>& hosts = {});
+                                  const std::vector<std::string>& hosts = {},
+                                  const std::function<void()>& check = {});
 int command_market_trades(const std::vector<std::string>& args);
 
 }  // namespace tdx
