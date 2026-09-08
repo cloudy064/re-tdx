@@ -69,6 +69,7 @@
 
 | 任务 | 入口 |
 |---|---|
+| 用单个 Python 文件直接调用通达信上游 | [tdx_api.py](../tdx_api.py)：`python tdx_api.py --help-all`，含行情、云查询、JSN和文件下载 |
 | 查看最终请求通达信的地址、命令号、用途、输入和输出 | [通达信上游 API 调用速查](API.md) |
 | 了解二进制基本信息 | [模块地图](01-recon/03-module-map.md) |
 | 确认工具链可用 | [工具链与环境](00-overview/03-toolchain-environment.md) |

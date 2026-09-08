@@ -2,6 +2,20 @@
 
 按仓库实际请求实现及协议证据整理。这里的 API 指**最终发往通达信服务器的 HTTP 请求、TCP 命令和文件资源**。输出列说明上游数据内容；TCP 二进制、ZIP/DAT 和 PBRPC 均需解码，不能直接当 JSON 使用。
 
+可直接使用单文件工具 [tdx_api.py](../tdx_api.py)，仅需 Python 3.10+ 标准库：
+
+```bash
+python tdx_api.py --help-all
+python tdx_api.py quote sz000001
+python tdx_api.py cloud --entry CWSearch.tzx_rcache --body '{"action":"get","key":"gg:0_000001","bin":"1","qsid":"tdx"}'
+python tdx_api.py jsn themes
+python tdx_api.py download tdxfin/gpcw.txt
+```
+
+`catalog` 列出接口和模板来源；`cloud --config <XML或安装目录> --req-id <请求号>` 读取实际模板。
+所有请求支持 `--dry-run`；`raw` 可发送本文其他 TCP 命令，但只解帧/解压，业务体按 hex 或二进制输出。
+行情、K线和成交查询按单页返回；PBRPC 自动拼接传输分片，ZIP/DAT 只下载原文件。
+
 ## 1. 实际请求地址
 
 | 通道 | 地址 | 请求 / 响应 |

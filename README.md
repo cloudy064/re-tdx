@@ -12,6 +12,19 @@
 
 通达信上游请求的地址、用途、输入和输出见 [通达信上游 API 调用速查](doc/API.md)。
 
+直接调用可用独立脚本 [tdx_api.py](tdx_api.py)（Python 3.10+，仅标准库，复制单个文件即可运行）：
+
+```bash
+python tdx_api.py --help-all
+python tdx_api.py quote sz000001 sh600000
+python tdx_api.py kline sz000001 --period day --count 20
+python tdx_api.py announcements sz000001
+python tdx_api.py catalog --search 基金
+```
+
+各请求支持 `--dry-run` 查看上游请求；云查询支持直接 JSON 或客户端 XML 模板，
+`python tdx_api.py self-test` 可运行离线协议检查。
+
 建议从以下顺序恢复项目上下文：
 
 1. [当前状态与证据边界](doc/00-overview/04-current-state.md)；
