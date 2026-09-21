@@ -10,6 +10,7 @@
  *   kline       multi-period K-lines (0x052D)
  *   timeline    today's intraday time-share series (0x0537)
  *   auction     call-auction point series (0x056A)
+ *   snapshot    batched whole-universe L1 snapshot (0x054C)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,8 @@
 #include "tdx_auction.h"
 #include "tdx_auction_json.h"
 #include "tdx_directory.h"
+#include "tdx_snapshot.h"
+#include "tdx_snapshot_json.h"
 #include "tdx_format.h"
 #include "tdx_hub.h"
 #include "tdx_kline.h"
@@ -48,7 +51,8 @@ static void usage(void) {
     printf("  tdx-l1stream trades --security CODE [--date YYYYMMDD] [options]\n");
     printf("  tdx-l1stream kline --security CODE --period PERIOD [options]\n");
     printf("  tdx-l1stream timeline --security CODE [options]\n");
-    printf("  tdx-l1stream auction --security CODE [options]\n\n");
+    printf("  tdx-l1stream auction --security CODE [options]\n");
+    printf("  tdx-l1stream snapshot --security CODE [--security CODE ...] [options]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -89,6 +93,10 @@ static void usage(void) {
     printf("  --start N            first record\n");
     printf("  --limit N            records to ask for, 1..%u, default 200\n\n",
            (unsigned)TDX_AUCTION_LIMIT_MAX);
+    printf("snapshot:\n");
+    printf("  --batch-size N       securities per request; the server caps this command\n");
+    printf("                       at %u, so a larger value is reduced to %u\n\n",
+           (unsigned)TDX_SNAPSHOT_BATCH_MAX, (unsigned)TDX_SNAPSHOT_BATCH_MAX);
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -1553,6 +1561,126 @@ done:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* snapshot                                                            */
+/* ------------------------------------------------------------------ */
+
+/* Sends the securities in batches of --batch-size and emits one JSONL line per
+ * record plus a trailing summary.  Batching is the point of this command: the
+ * record carries no order book, so more securities fit in one round trip than
+ * 0x0547 manages.  The universe comes from --security when given and from the
+ * server directory otherwise, exactly as sweep resolves it. */
+static int command_snapshot(const cli_options *options, tdx_error *err) {
+    tdx_connection connection;
+    tdx_snapshot records[TDX_SNAPSHOT_BATCH_MAX];
+    tdx_snapshot_tally tally;
+    tdx_code *codes = NULL;
+    size_t code_count = 0;
+    tdx_buf line;
+    FILE *stream;
+    char endpoint[80];
+    size_t batch = options->batch_size;
+    size_t offset;
+    int status = TDX_ERR;
+
+    if (batch < 1) {
+        tdx_error_set(err, "--batch-size must be positive");
+        return TDX_ERR;
+    }
+    /* --batch-size is shared with the depth commands, whose cap is higher, so a
+     * request above this command's server cap is reduced rather than refused -
+     * but it is said out loud instead of silently. */
+    if (batch > TDX_SNAPSHOT_BATCH_MAX) {
+        if (!options->quiet)
+            fprintf(stderr,
+                    "note: 0x054C is capped at %u records per request; using %u instead of %zu\n",
+                    (unsigned)TDX_SNAPSHOT_BATCH_MAX, (unsigned)TDX_SNAPSHOT_BATCH_MAX, batch);
+        batch = TDX_SNAPSHOT_BATCH_MAX;
+    }
+    if (build_universe(options, &codes, &code_count, err) != TDX_OK)
+        return TDX_ERR;
+    if (code_count == 0) {
+        tdx_error_set(err, "the universe is empty");
+        free(codes);
+        return TDX_ERR;
+    }
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        free(codes);
+        return TDX_ERR;
+    }
+    tdx_buf_init(&line);
+    tdx_snapshot_tally_init(&tally);
+    memset(endpoint, 0, sizeof(endpoint));
+    memset(&connection, 0, sizeof(connection));
+    connection.socket_handle = (intptr_t)-1;
+
+    for (offset = 0; offset < code_count; offset += batch) {
+        size_t want = code_count - offset;
+        size_t got = 0;
+        size_t index;
+        tdx_error step;
+
+        if (want > batch)
+            want = batch;
+        step.message[0] = '\0';
+        if (tdx_connection_open(&connection, &options->pool.items[0], options->timeout_ms,
+                                &step) != TDX_OK) {
+            *err = step;
+            goto close_output;
+        }
+        if (tdx_snapshot_fetch(&connection, codes + offset, want, records,
+                               TDX_SNAPSHOT_BATCH_MAX, &got, &step) != TDX_OK) {
+            tdx_connection_close(&connection);
+            *err = step;
+            goto close_output;
+        }
+        tdx_endpoint_address(&options->pool.items[0], endpoint, sizeof(endpoint));
+        tdx_connection_close(&connection);
+        /* A truncated batch is a failure, not a short answer. */
+        if (got != want) {
+            tdx_error_set(err, "snapshot batch returned %zu of %zu records", got, want);
+            goto close_output;
+        }
+        for (index = 0; index < got; ++index) {
+            tdx_buf_clear(&line);
+            if (tdx_snapshot_format(&line, &records[index], err) != TDX_OK)
+                goto close_output;
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+                goto close_output;
+            if (fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the snapshot stream");
+                goto close_output;
+            }
+        }
+        tdx_snapshot_tally_add(&tally, records, got);
+    }
+    tdx_buf_clear(&line);
+    if (tdx_snapshot_format_summary(&line, &tally, code_count, endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the snapshot summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    free(codes);
+    tdx_buf_free(&line);
+    if (status != TDX_OK)
+        return status;
+    if (!options->quiet)
+        fprintf(stderr, "snapshot: %zu securities in batches of %zu, endpoint=%s\n",
+                tally.record_count, batch, endpoint);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -1601,6 +1729,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "auction") == 0) {
         if (command_auction(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "snapshot") == 0) {
+        if (command_snapshot(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

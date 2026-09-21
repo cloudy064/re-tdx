@@ -20,11 +20,11 @@ extern "C" {
 #endif
 
 #define TDX_CMD_DEPTH 0x0547
-#define TDX_CMD_SNAPSHOT 0x054C
 #define TDX_DEPTH_LEVELS 5
 #define TDX_DEPTH_BATCH_MAX 100 /* server-side cap observed on live nodes */
-#define TDX_SNAPSHOT_BATCH_MAX 80
 #define TDX_QUOTE_TAIL_MAX 64
+/* 0x054C and its batch bounds live in tdx_snapshot.h, next to the code that
+ * actually speaks that command. */
 
 typedef struct tdx_code {
     int market_id; /* 0 Shenzhen, 1 Shanghai, 2 Beijing */

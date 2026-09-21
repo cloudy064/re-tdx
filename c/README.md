@@ -41,6 +41,8 @@ c/
     tdx_timeline_json.h    分时的 JSONL 渲染
     tdx_auction.h        0x056A 集合竞价序列
     tdx_auction_json.h    竞价序列的 JSONL 渲染
+    tdx_snapshot.h        0x054C 全量快照
+    tdx_snapshot_json.h   全量快照的 JSONL 渲染与累加器
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -51,13 +53,15 @@ c/
     tdx_hub.c  tdx_serve.c  tdx_md5.c  tdx_download.c  tdx_trades.c
     tdx_trades_json.c  tdx_kline.c  tdx_kline_json.c  tdx_timeline.c
     tdx_timeline_json.c  tdx_zst.c  tdx_zst_replay.c  tdx_zst_json.c
-    tdx_auction.c  tdx_auction_json.c  tdx_zst_day.c  main.c
+    tdx_auction.c  tdx_auction_json.c  tdx_snapshot.c  tdx_snapshot_json.c
+    tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
     test_pool.c   test_state.c  test_hub.c  test_zst.c  test_download.c
     test_trades.c  test_kline.c  kline_fixtures.h (generated)
     test_timeline.c  timeline_fixtures.h (generated)
     test_auction.c   auction_fixtures.h (generated)
+    test_snapshot.c  snapshot_fixtures.h (generated)
 ```
 
 ## 构建
@@ -76,7 +80,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-13/13 测试通过、0 warning。
+14/14 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -149,6 +153,10 @@ tdx-l1stream timeline --security sz000623 --root C:\new_tdx `
 tdx-l1stream auction --security sz000623 --root C:\new_tdx
 tdx-l1stream auction --security sz000623 --selector 1 --root C:\new_tdx `
                      --output output\auction-000623-both.jsonl
+
+# 全市场 L1 快照（0x054C，批上限 80；--market/--category 与 sweep 同样的 universe 口径）
+tdx-l1stream snapshot --market sz,sh,bj --category a_share --root C:\new_tdx `
+                      --output output\snapshot-ashare.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -524,6 +532,57 @@ JSON 里出现 `true\0fa`（`fa` 是 `false` 的尾巴）。这种错误在按 `
 看不出来，只有按 C 字符串读才会暴露。现在 5 个 JSON 模块的宏上方都写了"只传字面量"，
 并且 `braces_balanced` 这类检查会把它拦住。
 
+## 全量快照：0x054C
+
+```
+请求 10 + 7×N 字节
+  [0] 5        固定标记
+  [1..7] 0
+  [8..9] u16 条数
+  每只： u8 市场 + 代码[6]
+应答
+  [0..1] 本实现不解释（原样报出）
+  [2..3] u16 条数
+  [4..]  记录，首尾相接，没有长度前缀
+```
+
+**记录没有长度前缀**，边界靠扫描恢复：某个字节是市场号（0..2）且其后 6 字节都是 ASCII 数字。
+这个扫描理论上会在记录的载荷里撞到假边界，所以只在"恰好得到声明的条数**且第一条在偏移 0**"
+时才接受；否则报错，而不是给出一份悄悄切错的序列。记录本身与 0x0547 同形（少五档），
+价格同样是增量+刻度，所以直接复用了项目里的 varint、wire 浮点和 `tdx_price_divisor`。
+
+### 与 0x0547 逐字段对账（同一批证券、两次独立往返）
+
+| 字段 | 结果 |
+|---|---|
+| last / previous / open / high / low | **一致** |
+| amount / total_hand / current_hand | **一致** |
+| inside / outside / imbalance | **一致** |
+| `open_amount` | **差**，见下 |
+| 未建模尾部字节数 | 0x0547 = 46，0x054C = 61–62 |
+
+`open_amount` 的差异**不是解码错误**：native 自己在两条路径上就用了不同的刻度——0x0547 路径
+`×10`（`market_protocol.cpp:289`），0x054C 路径 `×100`（同文件 `:163`）。实测 0x054C 的原始值
+是 0x0547 原始值的 1/10 量级（19358 对 193577），即这条命令该字段的分辨率粗 10 倍。
+
+**两条命令都留下大量未建模字节**（0x0547 46 字节 / 0x054C 61 字节），本实现按 c/ 的既有约定
+**只报数量、不编语义**（`tail_bytes` / `tdx_depth.tail_size`）。这是一个明确记录的缺口。
+
+### 顺带修正的一个判断
+
+我原先以为 0x054C 是"更省的 0x0547"，**实测不是**：
+
+| | 记录大小 | 每请求上限 | 全市场 A 股（5574 只） |
+|---|---:|---:|---|
+| `0x0547`（`sweep`） | 117.7 B | 100 | 56 请求 / 6 连接 / **0.44 s** |
+| `0x054C`（`snapshot`） | 103.0 B | **80** | 70 请求 / 单连接 / 4.78 s |
+
+记录只小约 12%，而服务端对这个命令的批上限是 **80**（请求 100 只、服务端只回 80 —— 这是活体
+实测，也正好解释了 `tdx_quote.h` 里那个一直没人用的 `TDX_SNAPSHOT_BATCH_MAX 80` 是对的）。
+所以全市场轮询仍然该用 `sweep`；`snapshot` 的价值在于**协议覆盖**、更小的记录，以及
+"只要 L1 标量、不要五档"的调用方不必解析阶梯。`snapshot` 是单连接的，与 `sweep` 的多连接
+池不是同一件事，这个对比不是同口径，上面的数字都标了连接数。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -707,6 +766,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_kline` | 周期别名表（含 `time`/`1m` 共用 id 7）、LC1 日期字解码、`880xxx` 板块指数判定、42 字节请求字段布局与补零、**三份活体应答原文**（日线/分钟/指数）的两种日期编码与 breadth 字段、指数字节当股票解析必须失败、时间排序、JSONL 括号平衡与 `null` |
 | `test_timeline` | 点位→时间标签映射（含午休跳段）、12 字节请求布局、**1173 字节活体应答**的 240 点解码、基点+偏移的读法（写成增量就会失败）、逐点成交量合计等于当日总量、截断/超帽/尾部未消费与负量的拒绝、JSONL 括号平衡与 `null` |
 | `test_auction` | 时间标签与买卖方向文案、28 字节请求的常数/选择器/起点/上限布局、**两份活体应答**（42 点只开盘 / 61 点开+收）的定长记录解码、带符号未匹配量与方向、两段划分与段内不变量（翻转次数、撮合量下修）、长度不符/非法秒/非法分钟/负价/NaN 的拒绝、JSONL 括号平衡与空段 |
+| `test_snapshot` | 基金净值判定（深 158/159、沪 17 个前缀 + 末位 0、北交所恒否）、10+7N 请求布局、**309 字节活体应答**的 3 条记录解码与另一条命令的字段对账（含 `open_amount` 刻度差异与未建模尾部）、记录边界扫描（数量不符/首条不偏移 0/零条）、市场号与代码非法、截断记录、累加器与 JSONL 括号平衡 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -723,9 +783,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
    控制台手按一次。
 3. 按订阅者集合进一步裁剪**批次数**（现在是按下标集合重排，批次边界可以更紧凑）。
 4. **指定日期分时 `0x0FB4`**：请求格式还没复原（见上文，候选体都被静默回应）。
-   `0x054C` 全量快照也只差实现——`tdx_quote.h` 里只剩两个没人引用的常量
-   （`TDX_CMD_SNAPSHOT`、`TDX_SNAPSHOT_BATCH_MAX`），是半拉子脚手架，要么补上去
-   要么删掉。
+5. **两条 L1 命令各留一大段未建模字节**：0x0547 的 46 字节、0x054C 的 61–62 字节尾部。
+   本实现只报数量、不编语义；要标定它们需要另找消费者证据（TdxW 侧或对照物）。
 5. **L2 秒级逐笔成交 / 逐笔委托**：交易所口径的那个，走内置 `1364`/`1374` 或
    SDK `4655`/`1801`/`1802`，需要授权业务事件。本仓库只做到结构确认与被动探针，
    `c/` 侧没做——公开会话拿不到，做了也无法验证。
