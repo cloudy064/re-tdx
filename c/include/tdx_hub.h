@@ -54,6 +54,11 @@ int tdx_hub_create(tdx_hub **out, const tdx_code *universe, size_t universe_size
 void tdx_hub_destroy(tdx_hub *hub);
 
 int tdx_hub_start(tdx_hub *hub, tdx_error *err);
+/* Asks the poller to stop and wakes every blocked subscriber.  The hub stays
+ * alive (status and snapshot still work) until it is destroyed, which lets a
+ * server drain in-flight connections before freeing it. */
+void tdx_hub_stop(tdx_hub *hub);
+int tdx_hub_is_stopping(tdx_hub *hub);
 /* Runs one round synchronously.  Used by tests and by single-shot callers. */
 int tdx_hub_poll_once(tdx_hub *hub, tdx_error *err);
 

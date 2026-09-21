@@ -504,14 +504,7 @@ void tdx_hub_destroy(tdx_hub *hub) {
     size_t index;
     if (!hub)
         return;
-    if (hub->poller_started) {
-        tdx_mutex_lock(&hub->lock);
-        hub->stopping = 1;
-        tdx_cond_broadcast(&hub->cond);
-        tdx_mutex_unlock(&hub->lock);
-        tdx_thread_join(&hub->poller);
-        hub->poller_started = 0;
-    }
+    tdx_hub_stop(hub);
     for (index = 0; index < hub->subscriber_slots; ++index)
         queue_destroy(&hub->subscribers[index]);
     free(hub->subscribers);
@@ -540,6 +533,29 @@ int tdx_hub_start(tdx_hub *hub, tdx_error *err) {
         return TDX_ERR;
     hub->poller_started = 1;
     return TDX_OK;
+}
+
+void tdx_hub_stop(tdx_hub *hub) {
+    if (!hub)
+        return;
+    tdx_mutex_lock(&hub->lock);
+    hub->stopping = 1;
+    tdx_cond_broadcast(&hub->cond);
+    tdx_mutex_unlock(&hub->lock);
+    if (hub->poller_started) {
+        tdx_thread_join(&hub->poller);
+        hub->poller_started = 0;
+    }
+}
+
+int tdx_hub_is_stopping(tdx_hub *hub) {
+    int stopping;
+    if (!hub)
+        return 1;
+    tdx_mutex_lock(&hub->lock);
+    stopping = hub->stopping;
+    tdx_mutex_unlock(&hub->lock);
+    return stopping;
 }
 
 int tdx_hub_poll_once(tdx_hub *hub, tdx_error *err) {

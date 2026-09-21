@@ -1,6 +1,7 @@
 /* tdx_serve.c - blocking accept loop, one thread per connection. */
 #include "tdx_serve.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,21 @@ static void close_socket(serve_socket handle) {
 #else
     close(handle);
 #endif
+}
+
+/* Shutdown plumbing.  The signal handler only touches a flag and the
+ * listening socket; closing it is what pulls a blocked accept() out. */
+static serve_socket g_listener = SERVE_INVALID;
+static volatile sig_atomic_t g_stopping = 0;
+static size_t g_active_connections = 0;
+static tdx_mutex g_connection_lock;
+
+static void serve_on_signal(int signal_number) {
+    (void)signal_number;
+    g_stopping = 1;
+    if (g_listener != SERVE_INVALID)
+        close_socket(g_listener);
+    g_listener = SERVE_INVALID;
 }
 
 static int send_all(serve_socket handle, const char *data, size_t size) {
@@ -234,6 +250,8 @@ static void route_stream(serve_connection *connection, const char *query) {
     tdx_buf_init(&event);
     tdx_buf_init(&codes_buffer);
     for (;;) {
+        if (g_stopping || tdx_hub_is_stopping(connection->hub))
+            break;
         if (tdx_hub_next(connection->hub, subscriber, &event, (int)idle_timeout,
                          &error) != TDX_OK)
             break;
@@ -326,8 +344,22 @@ static void route_index(serve_connection *connection) {
     (void)send_text(connection->client, page);
 }
 
+static void service_connection_inner(serve_connection *connection);
+
 static void service_connection(void *context) {
     serve_connection *connection = (serve_connection *)context;
+    tdx_mutex_lock(&g_connection_lock);
+    g_active_connections++;
+    tdx_mutex_unlock(&g_connection_lock);
+    service_connection_inner(connection);
+    close_socket(connection->client);
+    free(connection);
+    tdx_mutex_lock(&g_connection_lock);
+    g_active_connections--;
+    tdx_mutex_unlock(&g_connection_lock);
+}
+
+static void service_connection_inner(serve_connection *connection) {
     char request[SERVE_REQUEST_MAX];
     size_t used = 0;
     int header_end = -1;
@@ -412,8 +444,6 @@ static void service_connection(void *context) {
         send_plain(connection->client, 404, "Not Found", "unknown route\n");
     }
 
-    close_socket(connection->client);
-    free(connection);
 }
 
 /* ------------------------------------------------------------------ */
@@ -452,6 +482,14 @@ int tdx_serve_run(tdx_hub *hub, const tdx_code *universe, size_t universe_size,
         return TDX_ERR;
     }
 
+    if (tdx_mutex_init(&g_connection_lock, err) != TDX_OK) {
+        close_socket(listener);
+        return TDX_ERR;
+    }
+    g_listener = listener;
+    signal(SIGINT, serve_on_signal);
+    signal(SIGTERM, serve_on_signal);
+    printf("press Ctrl+C to stop\n");
     printf("tdx-l1stream listening on http://127.0.0.1:%d/ (universe %zu)\n",
            options->port, universe_size);
     printf("  GET /api/v1/market/stream            SSE for the whole universe\n");
@@ -461,11 +499,14 @@ int tdx_serve_run(tdx_hub *hub, const tdx_code *universe, size_t universe_size,
     fflush(stdout);
 
     for (;;) {
-        serve_socket client = accept(listener, NULL, NULL);
+        serve_socket client;
         serve_connection *connection;
         tdx_thread thread;
         tdx_error thread_error;
 
+        if (g_stopping)
+            break;
+        client = accept(g_listener, NULL, NULL);
         if (client == SERVE_INVALID)
             break;
         {
@@ -494,6 +535,34 @@ int tdx_serve_run(tdx_hub *hub, const tdx_code *universe, size_t universe_size,
         /* Detached: the handler owns the connection and frees it. */
         tdx_thread_detach(&thread);
     }
-    close_socket(listener);
+    if (g_listener != SERVE_INVALID) {
+        close_socket(g_listener);
+        g_listener = SERVE_INVALID;
+    }
+    /* Stop the poller and wake every blocked subscriber, then let the
+     * in-flight handlers return before the caller frees the hub. */
+    tdx_hub_stop(hub);
+    {
+        int waited_ms = 0;
+        for (;;) {
+            size_t active;
+            tdx_mutex_lock(&g_connection_lock);
+            active = g_active_connections;
+            tdx_mutex_unlock(&g_connection_lock);
+            if (active == 0)
+                break;
+            if (waited_ms >= 5000) {
+                fprintf(stderr,
+                        "warning: %zu connection(s) still open, exiting anyway\n",
+                        active);
+                break;
+            }
+            tdx_sleep_ms(20);
+            waited_ms += 20;
+        }
+    }
+    tdx_mutex_destroy(&g_connection_lock);
+    printf("stopped\\n");
+    fflush(stdout);
     return TDX_OK;
 }
