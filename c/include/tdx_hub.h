@@ -34,10 +34,10 @@ typedef struct tdx_hub_options {
     size_t subscriber_queue_limit;
     int interval_ms;
     int heartbeat_ms;
-    /* After idle_rounds consecutive rounds with no change the poller drops
-     * to idle_interval_ms; any change snaps it back to interval_ms.  0 in
-     * idle_interval_ms disables the backoff. */
     /* Cold tier cadence.  0 or <= interval_ms means "no cold step". */
+    /* Warm tier cadence.  0 means "auto": three hot intervals, clamped into
+     * the ladder.  Non-zero is used as given, after the same clamping. */
+    int tier_warm_ms;
     int idle_interval_ms;
     /* Consecutive quiet polls before a security is demoted one tier. */
     int idle_rounds;

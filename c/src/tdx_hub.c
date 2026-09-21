@@ -85,6 +85,7 @@ void tdx_hub_options_default(tdx_hub_options *options) {
     options->subscriber_queue_limit = TDX_HUB_DEFAULT_QUEUE_LIMIT;
     options->interval_ms = TDX_HUB_DEFAULT_INTERVAL_MS;
     options->idle_interval_ms = 0;
+    options->tier_warm_ms = 0;
     options->idle_rounds = 30;
     options->heartbeat_ms = TDX_HUB_DEFAULT_HEARTBEAT_MS;
 }
@@ -431,6 +432,10 @@ int tdx_hub_create(tdx_hub **out, const tdx_code *universe, size_t universe_size
         tdx_error_set(err, "hub interval must be in 1..600000 ms");
         return TDX_ERR;
     }
+    if (options->tier_warm_ms < 0 || options->tier_warm_ms > 600000) {
+        tdx_error_set(err, "hub warm interval must be in 0..600000 ms");
+        return TDX_ERR;
+    }
     if (options->idle_interval_ms < 0 || options->idle_interval_ms > 600000) {
         tdx_error_set(err, "hub idle interval must be in 0..600000 ms");
         return TDX_ERR;
@@ -452,7 +457,9 @@ int tdx_hub_create(tdx_hub **out, const tdx_code *universe, size_t universe_size
     hub->tier_cold_ms = options->idle_interval_ms > hub->tier_hot_ms
                             ? options->idle_interval_ms
                             : hub->tier_hot_ms;
-    hub->tier_warm_ms = hub->tier_hot_ms * 3;
+    /* Explicit warm wins; 0 means the automatic three-hot-interval step. */
+    hub->tier_warm_ms = options->tier_warm_ms > 0 ? options->tier_warm_ms
+                                                   : hub->tier_hot_ms * 3;
     if (hub->tier_warm_ms > hub->tier_cold_ms)
         hub->tier_warm_ms = hub->tier_cold_ms;
     if (hub->tier_warm_ms < hub->tier_hot_ms)

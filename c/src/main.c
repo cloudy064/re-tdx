@@ -45,6 +45,7 @@ static void usage(void) {
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
     printf("  --heartbeat-ms N     idle event for a subscriber, default 15000\n\n");
+    printf("  --tier-warm-ms N     warm tier cadence, 0 = auto (3x hot)\n");
     printf("  --idle-interval-ms N after N quiet rounds, slow down to this\n");
     printf("                       cadence; 0 disables, default 0\n");
     printf("  --idle-rounds N      quiet rounds before slowing, default 30\n\n");
@@ -69,6 +70,7 @@ typedef struct cli_options {
     int interval_ms;
     size_t max_subscribers;
     int heartbeat_ms;
+    int tier_warm_ms;
     int idle_interval_ms;
     int idle_rounds;
     int port;
@@ -89,6 +91,7 @@ static void options_init(cli_options *options) {
     options->interval_ms = 1000;
     options->max_subscribers = 16;
     options->heartbeat_ms = TDX_HUB_DEFAULT_HEARTBEAT_MS;
+    options->tier_warm_ms = 0;
     options->idle_interval_ms = 0;
     options->idle_rounds = 30;
     options->port = 8790;
@@ -261,6 +264,13 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
                 return TDX_ERR;
             }
             options->max_subscribers = (size_t)parsed;
+        } else if (strcmp(argument, "--tier-warm-ms") == 0) {
+            int parsed = atoi(value);
+            if (parsed < 0 || parsed > 600000) {
+                tdx_error_set(err, "--tier-warm-ms must be in 0..600000");
+                return TDX_ERR;
+            }
+            options->tier_warm_ms = parsed;
         } else if (strcmp(argument, "--idle-interval-ms") == 0) {
             int parsed = atoi(value);
             if (parsed < 0 || parsed > 600000) {
@@ -866,6 +876,7 @@ static int command_serve(const cli_options *options, tdx_error *err) {
     hub_options.subscriber_queue_limit = TDX_HUB_DEFAULT_QUEUE_LIMIT;
     hub_options.interval_ms = options->interval_ms;
     hub_options.heartbeat_ms = options->heartbeat_ms;
+    hub_options.tier_warm_ms = options->tier_warm_ms;
     hub_options.idle_interval_ms = options->idle_interval_ms;
     hub_options.idle_rounds = options->idle_rounds;
     if (tdx_hub_create(&hub, codes, count, &hub_options, serve_fetch, &fetch,

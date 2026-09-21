@@ -496,6 +496,7 @@ static void test_idle_backoff(void) {
     options.heartbeat_ms = 0;
     options.interval_ms = 1000;
     options.idle_interval_ms = 5000;
+    options.tier_warm_ms = 2500; /* explicit warm step, not the auto 3x */
     options.idle_rounds = 2;
     if (tdx_hub_create(&hub, feed.codes, feed.count, &options, feed_fetch, &feed,
                        &error) != TDX_OK) {
@@ -520,7 +521,8 @@ static void test_idle_backoff(void) {
 
     CHECK(tdx_hub_poll_once(hub, &error) == TDX_OK, "third poll failed");
     CHECK(status_int(hub, "effective_interval_ms", &effective), "status read failed");
-    CHECK(effective == 3000, "two quiet rounds must demote to warm (%ld)", effective);
+    CHECK(effective == 2500, "two quiet rounds must demote to the configured warm (%ld)",
+          effective);
     CHECK(status_int(hub, "tier_warm", &warm) && warm == 4,
           "expected four warm securities, got %ld", warm);
 
