@@ -5,6 +5,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -22,6 +23,14 @@ public:
     Json(int value);
     Json(std::int64_t value);
     Json(std::uint64_t value);
+    template <typename Integer,
+              std::enable_if_t<
+                  std::is_integral_v<Integer> &&
+                  !std::is_same_v<std::remove_cv_t<Integer>, bool> &&
+                  !std::is_same_v<std::remove_cv_t<Integer>, int> &&
+                  !std::is_same_v<std::remove_cv_t<Integer>, std::int64_t> &&
+                  !std::is_same_v<std::remove_cv_t<Integer>, std::uint64_t>, int> = 0>
+    Json(Integer value) : value_(static_cast<double>(value)) {}
     Json(double value);
     Json(const char* value);
     Json(std::string value);

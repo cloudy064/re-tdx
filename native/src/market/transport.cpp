@@ -2,13 +2,21 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <sstream>
 
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+#include <cerrno>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
 #endif
 
 #include <zlib.h>
@@ -43,6 +51,26 @@ WinsockRuntime& winsock_runtime() {
 
 std::string socket_error(const char* operation) {
     return std::string(operation) + " failed: WSA " + std::to_string(WSAGetLastError());
+}
+#else
+std::string socket_error(const char* operation) {
+    return std::string(operation) + " failed: " + std::strerror(errno);
+}
+
+std::optional<unsigned int> configured_socket_mark() {
+#ifdef SO_MARK
+    const char* raw = std::getenv("TDX_SOCKET_MARK");
+    if (!raw || !*raw) return std::nullopt;
+    char* end = nullptr;
+    errno = 0;
+    const auto value = std::strtoul(raw, &end, 0);
+    if (errno || end == raw || *end != '\0' ||
+        value > std::numeric_limits<unsigned int>::max())
+        throw Error("TDX_SOCKET_MARK must be an unsigned integer");
+    return static_cast<unsigned int>(value);
+#else
+    return std::nullopt;
+#endif
 }
 #endif
 
@@ -109,6 +137,8 @@ bool detail::is_transient_quote_transport_error(
         "server closed connection",
         "send failed: WSA ",
         "receive failed: WSA ",
+        "send failed: ",
+        "receive failed: ",
     };
     return std::any_of(std::begin(markers), std::end(markers),
                        [&](std::string_view marker) {
@@ -137,9 +167,12 @@ Bytes build_request_frame(std::uint32_t message_id, std::uint16_t message_type,
 
 QuoteConnection::QuoteConnection(Endpoint endpoint, int timeout_ms, QuoteProtocol protocol)
     : endpoint_(std::move(endpoint)), protocol_(protocol) {
-#ifdef _WIN32
     if (timeout_ms < 1) throw Error("network timeout must be positive");
+#ifdef _WIN32
     (void)winsock_runtime();
+#else
+    const auto socket_mark = configured_socket_mark();
+#endif
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -148,10 +181,15 @@ QuoteConnection::QuoteConnection(Endpoint endpoint, int timeout_ms, QuoteProtoco
     const auto port = std::to_string(endpoint_.port);
     const int lookup = getaddrinfo(endpoint_.host.c_str(), port.c_str(), &hints, &addresses);
     if (lookup != 0) throw Error("cannot resolve " + endpoint_.address() + ": " +
+#ifdef _WIN32
                                  gai_strerrorA(lookup));
+#else
+                                 gai_strerror(lookup));
+#endif
 
     int last_error = 0;
     for (auto* address = addresses; address; address = address->ai_next) {
+#ifdef _WIN32
         const SOCKET candidate = ::socket(address->ai_family, address->ai_socktype,
                                            address->ai_protocol);
         if (candidate == INVALID_SOCKET) {
@@ -163,17 +201,48 @@ QuoteConnection::QuoteConnection(Endpoint endpoint, int timeout_ms, QuoteProtoco
                    reinterpret_cast<const char*>(&timeout), sizeof(timeout));
         setsockopt(candidate, SOL_SOCKET, SO_SNDTIMEO,
                    reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+        const int candidate = ::socket(address->ai_family, address->ai_socktype,
+                                       address->ai_protocol);
+        if (candidate < 0) {
+            last_error = errno;
+            continue;
+        }
+        const timeval timeout{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+        setsockopt(candidate, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(candidate, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#ifdef SO_MARK
+        if (socket_mark && setsockopt(candidate, SOL_SOCKET, SO_MARK,
+                                      &*socket_mark, sizeof(*socket_mark)) != 0) {
+            const auto detail = socket_error("setting TDX_SOCKET_MARK");
+            ::close(candidate);
+            freeaddrinfo(addresses);
+            throw Error(detail);
+        }
+#endif
+#endif
         if (::connect(candidate, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
             socket_ = static_cast<std::uintptr_t>(candidate);
             break;
         }
+#ifdef _WIN32
         last_error = WSAGetLastError();
         closesocket(candidate);
+#else
+        last_error = errno;
+        ::close(candidate);
+#endif
     }
     freeaddrinfo(addresses);
-    if (socket_ == invalid_socket_value)
+    if (socket_ == invalid_socket_value) {
+#ifdef _WIN32
         throw Error("cannot connect to " + endpoint_.address() + ": WSA " +
                     std::to_string(last_error));
+#else
+        throw Error("cannot connect to " + endpoint_.address() + ": " +
+                    std::strerror(last_error));
+#endif
+    }
 
     try {
         if (protocol_ == QuoteProtocol::expansion) {
@@ -207,58 +276,62 @@ QuoteConnection::QuoteConnection(Endpoint endpoint, int timeout_ms, QuoteProtoco
         close();
         throw;
     }
-#else
-    (void)timeout_ms;
-    throw Error("7709 transport is currently implemented for Windows only");
-#endif
 }
 
 QuoteConnection::~QuoteConnection() { close(); }
 
 void QuoteConnection::close() noexcept {
-#ifdef _WIN32
     if (socket_ != invalid_socket_value) {
+#ifdef _WIN32
         closesocket(static_cast<SOCKET>(socket_));
+#else
+        ::close(static_cast<int>(socket_));
+#endif
         socket_ = invalid_socket_value;
     }
-#endif
 }
 
 void QuoteConnection::send_all(const Bytes& data) {
-#ifdef _WIN32
     std::size_t sent = 0;
     while (sent < data.size()) {
         const auto remaining = std::min<std::size_t>(data.size() - sent,
                                                      std::numeric_limits<int>::max());
+#ifdef _WIN32
         const int count = ::send(static_cast<SOCKET>(socket_),
                                  reinterpret_cast<const char*>(data.data() + sent),
                                  static_cast<int>(remaining), 0);
         if (count == SOCKET_ERROR) throw Error(socket_error("send"));
+#else
+        const auto count = ::send(static_cast<int>(socket_),
+                                  data.data() + sent, remaining, MSG_NOSIGNAL);
+        if (count < 0) throw Error(socket_error("send"));
+#endif
         if (count == 0) throw Error("server closed connection while sending");
         sent += static_cast<std::size_t>(count);
     }
-#else
-    (void)data;
-#endif
 }
 
 Bytes QuoteConnection::receive_exact(std::size_t size) {
     Bytes result(size);
-#ifdef _WIN32
     std::size_t received = 0;
     while (received < size) {
         const auto remaining = std::min<std::size_t>(size - received,
                                                      std::numeric_limits<int>::max());
+#ifdef _WIN32
         const int count = ::recv(static_cast<SOCKET>(socket_),
                                  reinterpret_cast<char*>(result.data() + received),
                                  static_cast<int>(remaining), 0);
         if (count == SOCKET_ERROR) throw Error(socket_error("receive"));
+#else
+        const auto count = ::recv(static_cast<int>(socket_),
+                                  result.data() + received, remaining, 0);
+        if (count < 0) throw Error(socket_error("receive"));
+#endif
         if (count == 0)
             throw Error("server closed connection after " + std::to_string(received) +
                         " of " + std::to_string(size) + " bytes");
         received += static_cast<std::size_t>(count);
     }
-#endif
     return result;
 }
 

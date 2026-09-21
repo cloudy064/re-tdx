@@ -2,6 +2,7 @@
 #include "tdx/utf8.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -16,11 +17,120 @@
 #ifdef _MSC_VER
 #pragma comment(lib, "bcrypt.lib")
 #endif
+#else
+#include <iconv.h>
+#include <openssl/evp.h>
 #endif
 
 namespace fs = std::filesystem;
 
 namespace tdx {
+
+#ifndef _WIN32
+namespace {
+
+Bytes convert_encoding(const std::uint8_t* data, std::size_t size,
+                       const char* from, const char* to) {
+    if (!size) return {};
+    const auto converter = iconv_open(to, from);
+    if (converter == reinterpret_cast<iconv_t>(-1))
+        throw Error(std::string("cannot initialize text conversion from ") +
+                    from + " to " + to);
+    struct IconvGuard {
+        iconv_t value;
+        ~IconvGuard() { iconv_close(value); }
+    } guard{converter};
+
+    auto* input = reinterpret_cast<char*>(const_cast<std::uint8_t*>(data));
+    auto input_left = size;
+    Bytes output(std::max<std::size_t>(64, size * 2 + 16));
+    std::size_t used = 0;
+    while (true) {
+        auto* output_cursor = reinterpret_cast<char*>(output.data() + used);
+        auto output_left = output.size() - used;
+        const auto result = iconv(converter, &input, &input_left,
+                                  &output_cursor, &output_left);
+        used = output.size() - output_left;
+        if (result != static_cast<std::size_t>(-1)) break;
+        if (errno == E2BIG) {
+            output.resize(output.size() * 2);
+            continue;
+        }
+        if ((errno == EILSEQ || errno == EINVAL) && input_left) {
+            const bool utf8_output = std::strcmp(to, "UTF-8") == 0;
+            const auto replacement_size = utf8_output ? 3U : 1U;
+            if (used + replacement_size > output.size()) output.resize(output.size() * 2);
+            if (utf8_output) {
+                output[used++] = 0xef;
+                output[used++] = 0xbf;
+                output[used++] = 0xbd;
+            } else output[used++] = static_cast<std::uint8_t>('?');
+            ++input;
+            --input_left;
+            (void)iconv(converter, nullptr, nullptr, nullptr, nullptr);
+            continue;
+        }
+        throw Error(std::string("cannot convert text from ") + from +
+                    " to " + to + ": " + std::strerror(errno));
+    }
+    output.resize(used);
+    return output;
+}
+
+std::string digest_hex(const unsigned char* digest, unsigned int size) {
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (unsigned int index = 0; index < size; ++index)
+        output << std::setw(2) << static_cast<unsigned>(digest[index]);
+    return output.str();
+}
+
+std::string openssl_hash_bytes(const Bytes& value, const EVP_MD* algorithm) {
+    auto* context = EVP_MD_CTX_new();
+    if (!context) throw Error("EVP_MD_CTX_new failed");
+    struct DigestGuard {
+        EVP_MD_CTX* value;
+        ~DigestGuard() { EVP_MD_CTX_free(value); }
+    } guard{context};
+    if (EVP_DigestInit_ex(context, algorithm, nullptr) != 1 ||
+        (!value.empty() && EVP_DigestUpdate(context, value.data(), value.size()) != 1))
+        throw Error("OpenSSL digest initialization/update failed");
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_size = 0;
+    if (EVP_DigestFinal_ex(context, digest.data(), &digest_size) != 1)
+        throw Error("OpenSSL digest finalization failed");
+    return digest_hex(digest.data(), digest_size);
+}
+
+std::string openssl_hash_file(const fs::path& path, const EVP_MD* algorithm) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) throw Error("cannot open file for hash: " + path_utf8(path));
+    auto* context = EVP_MD_CTX_new();
+    if (!context) throw Error("EVP_MD_CTX_new failed");
+    struct DigestGuard {
+        EVP_MD_CTX* value;
+        ~DigestGuard() { EVP_MD_CTX_free(value); }
+    } guard{context};
+    if (EVP_DigestInit_ex(context, algorithm, nullptr) != 1)
+        throw Error("OpenSSL digest initialization failed");
+    Bytes buffer(1 << 20);
+    while (stream) {
+        stream.read(reinterpret_cast<char*>(buffer.data()),
+                    static_cast<std::streamsize>(buffer.size()));
+        const auto count = stream.gcount();
+        if (count > 0 && EVP_DigestUpdate(
+                context, buffer.data(), static_cast<std::size_t>(count)) != 1)
+            throw Error("OpenSSL digest update failed");
+    }
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_size = 0;
+    if (EVP_DigestFinal_ex(context, digest.data(), &digest_size) != 1)
+        throw Error("OpenSSL digest finalization failed");
+    return digest_hex(digest.data(), digest_size);
+}
+
+}  // namespace
+#endif
 
 fs::path running_executable_path() {
 #ifdef _WIN32
@@ -129,7 +239,9 @@ Bytes encode_gbk(std::string_view value) {
         size, nullptr, nullptr);
     return result;
 #else
-    return Bytes(value.begin(), value.end());
+    return convert_encoding(
+        reinterpret_cast<const std::uint8_t*>(value.data()), value.size(),
+        "UTF-8", "GBK");
 #endif
 }
 
@@ -147,7 +259,9 @@ std::string decode_gbk(const Bytes& value) {
                         wide.data(), wide_size);
     return wide_to_utf8(wide);
 #else
-    return std::string(value.begin(), value.end());
+    const auto decoded = convert_encoding(
+        value.data(), value.size(), "GB18030", "UTF-8");
+    return std::string(decoded.begin(), decoded.end());
 #endif
 }
 
@@ -284,13 +398,18 @@ std::string sha256_file(const fs::path& path) {
     for (auto byte : digest) output << std::setw(2) << static_cast<unsigned>(byte);
     return output.str();
 #else
-    (void)path;
-    throw Error("SHA256 is not implemented on this platform");
+    return openssl_hash_file(path, EVP_sha256());
 #endif
 }
 
 namespace {
-std::string bcrypt_hash_file(const fs::path& path, LPCWSTR algorithm_name,
+#ifdef _WIN32
+using NativeAlgorithmName = LPCWSTR;
+#else
+using NativeAlgorithmName = const wchar_t*;
+#endif
+
+std::string bcrypt_hash_file(const fs::path& path, NativeAlgorithmName algorithm_name,
                              std::size_t digest_size) {
 #ifdef _WIN32
     BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -342,7 +461,7 @@ std::string bcrypt_hash_file(const fs::path& path, LPCWSTR algorithm_name,
 #endif
 }
 
-std::string bcrypt_hash_bytes(const Bytes& value, LPCWSTR algorithm_name,
+std::string bcrypt_hash_bytes(const Bytes& value, NativeAlgorithmName algorithm_name,
                               std::size_t digest_size) {
 #ifdef _WIN32
     BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -383,8 +502,7 @@ std::string md5_file(const fs::path& path) {
 #ifdef _WIN32
     return bcrypt_hash_file(path, BCRYPT_MD5_ALGORITHM, 16);
 #else
-    (void)path;
-    throw Error("MD5 is not implemented on this platform");
+    return openssl_hash_file(path, EVP_md5());
 #endif
 }
 
@@ -392,8 +510,15 @@ std::string md5_bytes(const Bytes& value) {
 #ifdef _WIN32
     return bcrypt_hash_bytes(value, BCRYPT_MD5_ALGORITHM, 16);
 #else
-    (void)value;
-    throw Error("MD5 is not implemented on this platform");
+    return openssl_hash_bytes(value, EVP_md5());
+#endif
+}
+
+std::string sha256_bytes(const Bytes& value) {
+#ifdef _WIN32
+    return bcrypt_hash_bytes(value, BCRYPT_SHA256_ALGORITHM, 32);
+#else
+    return openssl_hash_bytes(value, EVP_sha256());
 #endif
 }
 

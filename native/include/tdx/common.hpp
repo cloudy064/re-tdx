@@ -30,6 +30,7 @@ std::string read_text_utf8(const std::filesystem::path& path);
 void atomic_write_bytes(const std::filesystem::path& path, const Bytes& value);
 void atomic_write_text(const std::filesystem::path& path, std::string_view value);
 std::string sha256_file(const std::filesystem::path& path);
+std::string sha256_bytes(const Bytes& value);
 std::string md5_file(const std::filesystem::path& path);
 std::string md5_bytes(const Bytes& value);
 
