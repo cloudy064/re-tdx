@@ -31,6 +31,18 @@ add_library(tdxl1core STATIC
     src/tdx_format.c
     src/tdx_hub.c
     src/tdx_serve.c
+    src/tdx_zst.c
+    src/tdx_zst_replay.c
+    src/tdx_zst_json.c
+    src/tdx_zst_day.c
+    src/tdx_md5.c
+    src/tdx_download.c
+    src/tdx_trades.c
+    src/tdx_trades_json.c
+    src/tdx_kline.c
+    src/tdx_kline_json.c
+    src/tdx_timeline.c
+    src/tdx_timeline_json.c
 )
 target_include_directories(tdxl1core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -67,7 +79,9 @@ target_link_libraries(tdx-l1stream PRIVATE tdxl1core)
 enable_testing()
 
 foreach(pair "frame:test_frame" "quote:test_quote" "directory:test_directory"
-             "pool:test_pool" "state:test_state" "hub:test_hub")
+             "pool:test_pool" "state:test_state" "hub:test_hub" "zst:test_zst"
+             "download:test_download" "endpoint:test_endpoint" "trades:test_trades"
+             "kline:test_kline" "timeline:test_timeline")
     string(REPLACE ":" ";" parts "${pair}")
     list(GET parts 0 name)
     list(GET parts 1 source)

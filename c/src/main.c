@@ -5,6 +5,10 @@
  *   securities  enumerate the server security directory
  *   sweep       poll a whole universe through a parallel connection pool
  *   watch       repeated sweeps with change detection, JSONL events on stdout
+ *   day         replay one historical session from a zst_cache .img, JSONL
+ *   trades      L1 trade details (minute resolution) for today or one date
+ *   kline       multi-period K-lines (0x052D)
+ *   timeline    today's intraday time-share series (0x0537)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,13 +17,21 @@
 #include "tdx_directory.h"
 #include "tdx_format.h"
 #include "tdx_hub.h"
+#include "tdx_kline.h"
+#include "tdx_kline_json.h"
 #include "tdx_serve.h"
 #include "tdx_l1.h"
 #include "tdx_pool.h"
 #include "tdx_state.h"
 #include "tdx_thread.h"
+#include "tdx_timeline.h"
+#include "tdx_timeline_json.h"
+#include "tdx_trades.h"
+#include "tdx_trades_json.h"
+#include "tdx_zst_day.h"
 
 #define TDX_CLI_SECURITY_MAX 8192
+#define TDX_CLI_ROOT_MAX 512
 
 static void usage(void) {
     printf("tdx-l1stream %s - standalone C client for TongDaXin L1 quotes\n\n",
@@ -28,7 +40,11 @@ static void usage(void) {
     printf("  tdx-l1stream probe --security [MARKET:]CODE [options]\n");
     printf("  tdx-l1stream securities [--market sz,sh,bj] [options]\n");
     printf("  tdx-l1stream sweep [--market sz,sh,bj] [-j N] [options]\n");
-    printf("  tdx-l1stream watch [--market sz,sh,bj] [-j N] [options]\n\n");
+    printf("  tdx-l1stream watch [--market sz,sh,bj] [-j N] [options]\n");
+    printf("  tdx-l1stream day --security CODE --date YYYYMMDD [options]\n");
+    printf("  tdx-l1stream trades --security CODE [--date YYYYMMDD] [options]\n");
+    printf("  tdx-l1stream kline --security CODE --period PERIOD [options]\n");
+    printf("  tdx-l1stream timeline --security CODE [options]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -41,6 +57,29 @@ static void usage(void) {
     printf("  --endpoints N        connect.cfg nodes to keep, default 3\n");
     printf("  -j, --connections N  parallel sessions, default 6\n");
     printf("  --batch-size N       securities per request, default 100\n\n");
+    printf("day:\n");
+    printf("  --date YYYYMMDD      session to replay, required\n");
+    printf("  --cache-dir PATH     default <root>\\T0002\\zst_cache\n");
+    printf("  --refresh            transfer again even when the cache holds it\n");
+    printf("  --no-cache           never read or write the local cache\n");
+    printf("  --raw                add the merged tag map to each line\n");
+    printf("  --changed-only       drop records that changed nothing\n");
+    printf("  --max-records N      cap how many snapshots are emitted\n");
+    printf("  --quiet              suppress the cache and transfer notes\n\n");
+    printf("trades:\n");
+    printf("  --date YYYYMMDD      omit for today (0x0FC5), give it for history (0x0FC6)\n");
+    printf("  --page-size N        records per request, default 1800 today / 2000 history\n");
+    printf("  --max-pages N        paging safety limit, default %d\n\n", TDX_TRADES_MAX_PAGES);
+    printf("kline:\n");
+    printf("  --period NAME        time|1m|5m|15m|30m|60m|day|week|month, required\n");
+    printf("  --start N            first record, counted back from the newest\n");
+    printf("  --page-size N        records per request, default 800\n");
+    printf("  --max-pages N        pages to walk, default %d\n", TDX_KLINE_PAGES_MAX);
+    printf("  --index / --stock    force the index record shape; default auto\n");
+    printf("  --date YYYYMMDD      keep only that day's bars (intraday periods)\n\n");
+    printf("timeline:\n");
+    printf("  --date YYYYMMDD      historical series; 0x0FB4's request shape is still\n");
+    printf("                       open, so only the today command works today\n\n");
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -79,6 +118,20 @@ typedef struct cli_options {
     size_t market_count;
     char category[TDX_DIRECTORY_CATEGORY_MAX];
     const char *output;
+    const char *date;
+    const char *cache_dir;
+    char root[TDX_CLI_ROOT_MAX];
+    size_t max_records;
+    int refresh;
+    int no_cache;
+    int raw_tags;
+    int changed_only;
+    int quiet;
+    int page_size;
+    int max_pages;
+    const char *period;
+    int start;
+    int index_mode; /* -1 stock, 0 auto, 1 index */
 } cli_options;
 
 static void options_init(cli_options *options) {
@@ -95,6 +148,10 @@ static void options_init(cli_options *options) {
     options->idle_interval_ms = 0;
     options->idle_rounds = 30;
     options->port = 8790;
+    /* Zero means "the command's own default"; the trade feed and the K-line walk
+     * have different ceilings, so neither may bake its own in here. */
+    options->max_pages = 0;
+    options->page_size = 0;
     options->markets[0] = 0;
     options->markets[1] = 1;
     options->markets[2] = 2;
@@ -169,6 +226,37 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
         if (strcmp(argument, "--help") == 0 || strcmp(argument, "-h") == 0) {
             usage();
             exit(0);
+        }
+        /* Boolean flags carry no value, so they are settled before the key/value
+         * pairing below; otherwise a trailing flag would look like a missing
+         * operand. */
+        if (strcmp(argument, "--refresh") == 0) {
+            options->refresh = 1;
+            continue;
+        }
+        if (strcmp(argument, "--no-cache") == 0) {
+            options->no_cache = 1;
+            continue;
+        }
+        if (strcmp(argument, "--raw") == 0) {
+            options->raw_tags = 1;
+            continue;
+        }
+        if (strcmp(argument, "--changed-only") == 0) {
+            options->changed_only = 1;
+            continue;
+        }
+        if (strcmp(argument, "--quiet") == 0) {
+            options->quiet = 1;
+            continue;
+        }
+        if (strcmp(argument, "--index") == 0) {
+            options->index_mode = 1;
+            continue;
+        }
+        if (strcmp(argument, "--stock") == 0) {
+            options->index_mode = -1;
+            continue;
         }
         if (index + 1 >= argc) {
             tdx_error_set(err, "%s needs a value", argument);
@@ -299,6 +387,40 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
                 return TDX_ERR;
             }
             options->limit = (size_t)parsed;
+        } else if (strcmp(argument, "--date") == 0) {
+            options->date = value;
+        } else if (strcmp(argument, "--cache-dir") == 0) {
+            options->cache_dir = value;
+        } else if (strcmp(argument, "--max-records") == 0) {
+            int parsed = atoi(value);
+            if (parsed < 1 || parsed > 10000000) {
+                tdx_error_set(err, "--max-records must be in 1..10000000");
+                return TDX_ERR;
+            }
+            options->max_records = (size_t)parsed;
+        } else if (strcmp(argument, "--page-size") == 0) {
+            int parsed = atoi(value);
+            if (parsed < 1 || parsed > 65535) {
+                tdx_error_set(err, "--page-size must be in 1..65535");
+                return TDX_ERR;
+            }
+            options->page_size = parsed;
+        } else if (strcmp(argument, "--max-pages") == 0) {
+            int parsed = atoi(value);
+            if (parsed < 1 || parsed > TDX_TRADES_MAX_PAGES) {
+                tdx_error_set(err, "--max-pages must be in 1..%d", TDX_TRADES_MAX_PAGES);
+                return TDX_ERR;
+            }
+            options->max_pages = parsed;
+        } else if (strcmp(argument, "--period") == 0) {
+            options->period = value;
+        } else if (strcmp(argument, "--start") == 0) {
+            int parsed = atoi(value);
+            if (parsed < 0 || parsed > TDX_KLINE_START_MAX) {
+                tdx_error_set(err, "--start must be in 0..%d", TDX_KLINE_START_MAX);
+                return TDX_ERR;
+            }
+            options->start = parsed;
         } else {
             tdx_error_set(err, "unknown option: %s", argument);
             return TDX_ERR;
@@ -317,6 +439,8 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
                                       err) != TDX_OK) {
         return TDX_ERR;
     }
+    if (root)
+        snprintf(options->root, sizeof(options->root), "%s", root);
     return TDX_OK;
 }
 
@@ -902,6 +1026,424 @@ done:
     return result;
 }
 
+/* ------------------------------------------------------------------ */
+/* day                                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Resolves where the .img cache lives.  A cache hit lets the command work
+ * completely offline, which is the whole reason the client keeps one. */
+static int day_cache_dir(const cli_options *options, char *buffer, size_t buffer_size,
+                         const char **out, tdx_error *err) {
+    if (options->no_cache) {
+        *out = NULL;
+        return TDX_OK;
+    }
+    if (options->cache_dir) {
+        *out = options->cache_dir;
+        return TDX_OK;
+    }
+    if (!options->root[0]) {
+        tdx_error_set(err, "day needs --cache-dir or --root, or --no-cache to always transfer");
+        return TDX_ERR;
+    }
+    if (snprintf(buffer, buffer_size, "%s/T0002/zst_cache", options->root) >=
+        (int)buffer_size) {
+        tdx_error_set(err, "--root is too long to derive a cache path from");
+        return TDX_ERR;
+    }
+    *out = buffer;
+    return TDX_OK;
+}
+
+static int command_day(const cli_options *options, tdx_error *err) {
+    tdx_zst_day_options day;
+    tdx_zst_day_result result;
+    char cache_buffer[TDX_CLI_ROOT_MAX + 32];
+    const char *cache_dir = NULL;
+    FILE *stream;
+    int status;
+
+    if (options->security_count != 1) {
+        tdx_error_set(err, "day needs exactly one --security");
+        return TDX_ERR;
+    }
+    if (!options->date) {
+        tdx_error_set(err, "day needs --date YYYYMMDD");
+        return TDX_ERR;
+    }
+    if (day_cache_dir(options, cache_buffer, sizeof(cache_buffer), &cache_dir, err) != TDX_OK)
+        return TDX_ERR;
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        return TDX_ERR;
+    }
+
+    memset(&day, 0, sizeof(day));
+    memset(&result, 0, sizeof(result));
+    day.security = options->securities[0];
+    snprintf(day.date, sizeof(day.date), "%s", options->date);
+    day.cache_dir = cache_dir;
+    day.refresh = options->refresh;
+    day.raw_tags = options->raw_tags;
+    day.changed_only = options->changed_only;
+    day.limit = options->max_records;
+    day.quiet = options->quiet;
+    day.out = stream;
+
+    status = tdx_zst_day_run(&options->pool, options->timeout_ms, &day, &result, err);
+    if (options->output)
+        fclose(stream);
+    if (status != TDX_OK)
+        return TDX_ERR;
+    if (options->quiet)
+        return TDX_OK;
+    fprintf(stderr,
+            "day %s %s: records=%zu emitted=%zu unchanged=%zu bytes=%zu source=%s "
+            "endpoint=%s md5=%s\n",
+            options->date, options->securities[0].code, result.records, result.emitted,
+            result.silent, result.bytes, result.source,
+            result.endpoint[0] ? result.endpoint : "-", result.md5[0] ? result.md5 : "-");
+    if (result.dropped_tags)
+        fprintf(stderr, "warning: %zu tags did not fit the replay map\n", result.dropped_tags);
+    return TDX_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* trades                                                              */
+/* ------------------------------------------------------------------ */
+
+static int command_trades(const cli_options *options, tdx_error *err) {
+    tdx_trade_series series;
+    tdx_trade_summary summary;
+    tdx_buf line;
+    FILE *stream;
+    char endpoint[80];
+    char server_date[TDX_TRADES_DATE_LENGTH + 1];
+    char trading_date[TDX_TRADES_DATE_LENGTH + 1];
+    const char *requested = options->date ? options->date : "";
+    const char *code;
+    int market_id;
+    int page_size;
+    int status = TDX_ERR;
+    size_t index;
+
+    if (options->security_count != 1) {
+        tdx_error_set(err, "trades needs exactly one --security");
+        return TDX_ERR;
+    }
+    if (*requested && tdx_trades_date_valid(requested, err) != TDX_OK)
+        return TDX_ERR;
+    market_id = options->securities[0].market_id;
+    code = options->securities[0].code;
+    page_size = options->page_size
+                    ? options->page_size
+                    : (*requested ? TDX_TRADES_PAGE_SIZE_HISTORY : TDX_TRADES_PAGE_SIZE_TODAY);
+
+    tdx_buf_init(&line);
+    tdx_trades_series_init(&series);
+    memset(&summary, 0, sizeof(summary));
+    memset(endpoint, 0, sizeof(endpoint));
+    server_date[0] = '\0';
+
+    if (tdx_trades_fetch_from_pool(&options->pool, options->timeout_ms, market_id, code,
+                                   requested, (uint16_t)page_size,
+                                   (size_t)(options->max_pages ? options->max_pages
+                                                               : TDX_TRADES_MAX_PAGES),
+                                   &series, endpoint, sizeof(endpoint), server_date,
+                                   err) != TDX_OK)
+        goto done;
+    /* 0x0FC5 carries no date of its own; 0x0004 supplied the server's. */
+    snprintf(trading_date, sizeof(trading_date), "%s",
+             *requested ? requested : server_date);
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    for (index = 0; index < series.count; ++index) {
+        tdx_buf_clear(&line);
+        if (tdx_trades_format_tick(&line, &series.ticks[index], market_id, code, trading_date,
+                                   err) != TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto close_output;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the trade stream");
+            goto close_output;
+        }
+    }
+    tdx_trades_summarize(&series, &summary);
+    tdx_buf_clear(&line);
+    if (tdx_trades_format_summary(&line, &series, &summary, market_id, code, trading_date,
+                                  endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the trade summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    if (status != TDX_OK)
+        goto done;
+    if (!options->quiet) {
+        char first_label[8];
+        char last_label[8];
+        if (summary.has_times) {
+            (void)tdx_trades_time_label(summary.first_time_minutes, first_label,
+                                        sizeof(first_label));
+            (void)tdx_trades_time_label(summary.last_time_minutes, last_label,
+                                        sizeof(last_label));
+        } else {
+            snprintf(first_label, sizeof(first_label), "-");
+            snprintf(last_label, sizeof(last_label), "-");
+        }
+        fprintf(stderr,
+                "trades %s %s: command=%s pages=%zu ticks=%zu minutes=%zu volume_hand=%lld "
+                "amount=%.2f vwap=%.4f %s..%s endpoint=%s date=%s\n",
+                *requested ? requested : "today", code,
+                series.history ? "0x0FC6" : "0x0FC5", series.pages, series.count,
+                summary.minute_count, (long long)summary.volume_hand, summary.amount_yuan,
+                summary.vwap, first_label, last_label, endpoint,
+                trading_date[0] ? trading_date : "-");
+    }
+
+done:
+    tdx_buf_free(&line);
+    tdx_trades_series_free(&series);
+    return status;
+}
+
+/* ------------------------------------------------------------------ */
+/* kline                                                               */
+/* ------------------------------------------------------------------ */
+
+/* Keeps only the bars of one trading day.  The wire has no date filter, so the
+ * window the caller paged through is what gets filtered. */
+static size_t kline_select_date(tdx_kline_bar *bars, size_t count, int wanted) {
+    size_t read_index;
+    size_t write_index = 0;
+    for (read_index = 0; read_index < count; ++read_index)
+        if (bars[read_index].date == wanted)
+            bars[write_index++] = bars[read_index];
+    return write_index;
+}
+
+static int command_kline(const cli_options *options, tdx_error *err) {
+    tdx_kline_series series;
+    tdx_kline_period period;
+    tdx_buf line;
+    FILE *stream;
+    char endpoint[80];
+    char day_filter[TDX_TRADES_DATE_LENGTH + 1];
+    const char *code;
+    int market_id;
+    int index_mode;
+    int status = TDX_ERR;
+    size_t index;
+    size_t emitted = 0;
+
+    if (options->security_count != 1) {
+        tdx_error_set(err, "kline needs exactly one --security");
+        return TDX_ERR;
+    }
+    if (!options->period) {
+        tdx_error_set(err, "kline needs --period time, 1m, 5m, 15m, 30m, 60m, day, week or month");
+        return TDX_ERR;
+    }
+    if (tdx_kline_period_parse(options->period, &period, err) != TDX_OK)
+        return TDX_ERR;
+    market_id = options->securities[0].market_id;
+    code = options->securities[0].code;
+    if (options->index_mode > 0)
+        index_mode = 1;
+    else if (options->index_mode < 0)
+        index_mode = 0;
+    else
+        index_mode = market_id == 1 && tdx_kline_is_block_index_code(code);
+    day_filter[0] = '\0';
+    if (options->date) {
+        if (tdx_trades_date_valid(options->date, err) != TDX_OK)
+            return TDX_ERR;
+        if (!period.intraday) {
+            tdx_error_set(err, "--date only filters intraday periods; use --start for daily bars");
+            return TDX_ERR;
+        }
+        snprintf(day_filter, sizeof(day_filter), "%s", options->date);
+    }
+
+    tdx_buf_init(&line);
+    tdx_kline_series_init(&series);
+    memset(endpoint, 0, sizeof(endpoint));
+    if (tdx_kline_fetch_from_pool(&options->pool, options->timeout_ms, market_id, code, &period,
+                                  index_mode, (uint16_t)options->start,
+                                  (uint16_t)(options->page_size ? options->page_size
+                                                                : TDX_KLINE_PAGE_SIZE_MAX),
+                                  (size_t)(options->max_pages ? options->max_pages
+                                                              : TDX_KLINE_PAGES_MAX),
+                                  &series, endpoint, sizeof(endpoint), err) != TDX_OK)
+        goto done;
+
+    if (day_filter[0]) {
+        int wanted = (day_filter[0] - '0') * 1000 + (day_filter[1] - '0') * 100 +
+                     (day_filter[2] - '0') * 10 + (day_filter[3] - '0');
+        wanted = wanted * 10000 + (day_filter[4] - '0') * 1000 + (day_filter[5] - '0') * 100 +
+                 (day_filter[6] - '0') * 10 + (day_filter[7] - '0');
+        series.count = kline_select_date(series.bars, series.count, wanted);
+    }
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    for (index = 0; index < series.count; ++index) {
+        tdx_buf_clear(&line);
+        if (tdx_kline_format_bar(&line, &series.bars[index], market_id, code, period.name,
+                                 err) != TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto close_output;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the K-line stream");
+            goto close_output;
+        }
+        emitted++;
+    }
+    tdx_buf_clear(&line);
+    if (tdx_kline_format_summary(&line, &series, market_id, code, period.name,
+                                 (uint16_t)options->start, endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the K-line summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    if (status != TDX_OK)
+        goto done;
+    if (!options->quiet) {
+        char first[32];
+        char last[32];
+        if (emitted) {
+            snprintf(first, sizeof(first), "%d %02d:%02d", series.bars[0].date,
+                     series.bars[0].hour, series.bars[0].minute);
+            snprintf(last, sizeof(last), "%d %02d:%02d", series.bars[series.count - 1].date,
+                     series.bars[series.count - 1].hour,
+                     series.bars[series.count - 1].minute);
+        } else {
+            snprintf(first, sizeof(first), "-");
+            snprintf(last, sizeof(last), "-");
+        }
+        fprintf(stderr,
+                "kline %s %s: period=%s(id=%u) index=%d pages=%zu bars=%zu %s..%s "
+                "endpoint=%s reached_end=%d\n",
+                code, options->period, period.name, (unsigned)period.id, index_mode,
+                series.pages, emitted, first, last, endpoint, series.reached_end);
+    }
+
+done:
+    tdx_buf_free(&line);
+    tdx_kline_series_free(&series);
+    return status;
+}
+
+/* ------------------------------------------------------------------ */
+/* timeline                                                            */
+/* ------------------------------------------------------------------ */
+
+static int command_timeline(const cli_options *options, tdx_error *err) {
+    tdx_timeline timeline;
+    tdx_buf line;
+    FILE *stream;
+    char endpoint[80];
+    const char *code;
+    int market_id;
+    int history;
+    int status = TDX_ERR;
+    size_t index;
+    long volume = 0;
+
+    if (options->security_count != 1) {
+        tdx_error_set(err, "timeline needs exactly one --security");
+        return TDX_ERR;
+    }
+    if (options->date && tdx_trades_date_valid(options->date, err) != TDX_OK)
+        return TDX_ERR;
+    market_id = options->securities[0].market_id;
+    code = options->securities[0].code;
+    history = options->date ? 1 : 0;
+
+    tdx_buf_init(&line);
+    tdx_timeline_init(&timeline);
+    memset(endpoint, 0, sizeof(endpoint));
+    if (tdx_timeline_fetch_from_pool(&options->pool, options->timeout_ms, market_id, code,
+                                     history, options->date, &timeline, endpoint,
+                                     sizeof(endpoint), err) != TDX_OK)
+        goto done;
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    for (index = 0; index < timeline.count; ++index) {
+        tdx_buf_clear(&line);
+        if (tdx_timeline_format_point(&line, &timeline, &timeline.points[index], market_id, code,
+                                      err) != TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto close_output;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the time-share stream");
+            goto close_output;
+        }
+        volume += (long)timeline.points[index].volume_hand;
+    }
+    tdx_buf_clear(&line);
+    if (tdx_timeline_format_summary(&line, &timeline, market_id, code, endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the time-share summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    if (status != TDX_OK)
+        goto done;
+    if (!options->quiet)
+        fprintf(stderr,
+                "timeline %s %s: command=0x0537 points=%zu base=%.4f volume_hand=%ld "
+                "endpoint=%s\n",
+                code, options->date ? options->date : "today", timeline.count,
+                timeline.base_price, volume, endpoint);
+
+done:
+    tdx_buf_free(&line);
+    tdx_timeline_free(&timeline);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -919,6 +1461,34 @@ int main(int argc, char **argv) {
     if (parse_options(argc - 1, argv + 1, &options, &error) != TDX_OK) {
         fprintf(stderr, "error: %s\n", error.message);
         return 2;
+    }
+    if (strcmp(argv[1], "day") == 0) {
+        if (command_day(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "trades") == 0) {
+        if (command_trades(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "kline") == 0) {
+        if (command_kline(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "timeline") == 0) {
+        if (command_timeline(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
     }
     if (strcmp(argv[1], "probe") == 0) {
         if (command_probe(&options, &error) != TDX_OK) {

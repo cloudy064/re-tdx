@@ -31,13 +31,30 @@ c/
     tdx_format.h          唯一的 JSON 渲染路径（CLI 与 Hub 共用）
     tdx_hub.h             常驻 Hub：裁剪 + 分层节拍 + 订阅者队列
     tdx_serve.h           只读 HTTP / SSE 服务
+    tdx_md5.h             RFC 1321 MD5（下载校验用）
+    tdx_download.h        0x02C5/0x06B9 资源传输
+    tdx_trades.h          0x0FC5/0x0FC6 L1 成交明细
+    tdx_trades_json.h     成交明细的 JSONL 渲染
+    tdx_kline.h           0x052D 多周期 K 线
+    tdx_kline_json.h      K 线的 JSONL 渲染
+    tdx_timeline.h        0x0537 当日分时（逆向所得）
+    tdx_timeline_json.h    分时的 JSONL 渲染
+    tdx_zst.h             zst_cache .img 容器 + tag 流解码
+    tdx_zst_replay.h      增量重放：把变化流折成完整快照
+    tdx_zst_json.h        快照的 JSON 渲染
+    tdx_zst_day.h         「一只票 + 一个日期」的取数编排
   src/
     tdx_bytes.c  tdx_text.c  tdx_thread.c  tdx_endpoint.c  tdx_frame.c
     tdx_quote.c  tdx_directory.c  tdx_pool.c  tdx_state.c  tdx_format.c
-    tdx_hub.c  tdx_serve.c  main.c
+    tdx_hub.c  tdx_serve.c  tdx_md5.c  tdx_download.c  tdx_trades.c
+    tdx_trades_json.c  tdx_kline.c  tdx_kline_json.c  tdx_timeline.c
+    tdx_timeline_json.c  tdx_zst.c  tdx_zst_replay.c  tdx_zst_json.c
+    tdx_zst_day.c  main.c
   tests/
-    test_frame.c  test_quote.c  test_directory.c
-    test_pool.c   test_state.c  test_hub.c
+    test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
+    test_pool.c   test_state.c  test_hub.c  test_zst.c  test_download.c
+    test_trades.c  test_kline.c  kline_fixtures.h (generated)
+    test_timeline.c  timeline_fixtures.h (generated)
 ```
 
 ## 构建
@@ -56,7 +73,11 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-6/6 测试通过、0 warning。
+12/12 测试通过、0 warning。
+
+`test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
+`C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
+文件不在时打印 `skip:` 并以 0 退出；后者在构建目录里自建一个 `connect.cfg` 夹具。
 
 ### 踩过的工具链坑
 
@@ -91,6 +112,35 @@ tdx-l1stream serve --market sz,sh,bj --category a_share -j 6 `
                    --interval-ms 1000 --tier-warm-ms 3000 `
                    --idle-interval-ms 15000 --idle-rounds 30 `
                    --port 8790 --root C:\new_tdx
+
+# 历史某天的完整 L1 盘口：优先读客户端自己的 zst_cache，缺了才去下载
+tdx-l1stream day --security sz000623 --date 20260612 `
+                 --root C:\new_tdx --output output\day-000623-20260612.jsonl
+
+# 只要变化，附带原始 tag 表；--no-cache 强制走传输
+tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
+                 --changed-only --raw --max-records 20 --quiet
+
+# 当日成交明细（0x0FC5）
+tdx-l1stream trades --security sz000623 --root C:\new_tdx --output output\trades-today.jsonl
+
+# 历史某天的成交明细（0x0FC6），分页自动走完再按时间正序输出
+tdx-l1stream trades --security sz000623 --date 20260612 --root C:\new_tdx `
+                    --page-size 2000 --max-pages 100 --output output\trades-000623-20260612.jsonl
+
+# 日线（最近 6 天）；K 线按时间正序输出，最后一行是汇总
+tdx-l1stream kline --security sz000623 --period day --page-size 6 --max-pages 1 --root C:\new_tdx
+
+# 1 分钟线，往回翻到某一天只要那一日；分页走多一点再把该日留下来
+tdx-l1stream kline --security sz000623 --period 1m --start 16520 --page-size 800 --max-pages 2 `
+                   --date 20260612 --root C:\new_tdx --output output\kline-000623-1m-20260612.jsonl
+
+# 指数要 breadth 字段：880xxx 自动识别，普通指数代码显式 --index
+tdx-l1stream kline --security sh000001 --period day --index --page-size 3 --root C:\new_tdx
+
+# 当日分时：240 点，价格 + 累计均价 + 每分钟成交量（手）
+tdx-l1stream timeline --security sz000623 --root C:\new_tdx `
+                     --output output\timeline-000623-today.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -98,6 +148,322 @@ tdx-l1stream serve --market sz,sh,bj --category a_share -j 6 `
 `--batch-size`、`--iterations`、`--interval-ms`、`--output`。
 Hub 相关：`--tier-warm-ms`、`--idle-interval-ms`、`--idle-rounds`、
 `--heartbeat-ms`、`--max-subscribers`、`--port`。
+`day` 相关：`--date YYYYMMDD`、`--cache-dir`、`--refresh`、`--no-cache`、
+`--raw`、`--changed-only`、`--max-records`、`--quiet`。
+`trades` 相关：`--date YYYYMMDD`（省略＝当日 `0x0FC5`，给出＝历史 `0x0FC6`）、
+`--page-size`、`--max-pages`、`--quiet`。
+`kline` 相关：`--period NAME`、`--start N`、`--page-size`（默认 800）、
+`--max-pages`（默认 20）、`--index`/`--stock`、`--date YYYYMMDD`（只筛分钟级周期）、
+`--quiet`。
+
+## 历史 L1：把 zst_cache 的变化流重放成完整快照
+
+`day` 回答的问题和前面的命令完全相反。轮询那边上游只会整条重发，增量是**本进程
+算出来的**；历史这边上游只发**变化**，完整记录得**重新拼回来**。
+
+### 资源与容器
+
+```
+远端   hishf/date/<YYYYMMDD>/<sz|sh|bj><代码>.img
+本地   <root>\T0002\zst_cache\<sz|sh|bj><代码>_<YYYYMMDD>.img
+```
+
+即客户端自己的缓存名就是远端名把日期从目录挪进文件名。
+
+容器 24 字节头 + zlib 流：`[8]` 压缩长度 = 文件大小-24，`[16]` 解压后长度。
+载荷是 tag 流：
+
+```
+tag 3 <8 字符证券键>      记录开始（2 位市场数字 ASCII + 6 位代码 ASCII）
+tag 2 <2 字符字段号><值>   值一直读到下一个 <0x20 的字节（就是下一个 tag）
+tag 4                    记录结束
+```
+
+注意**字段之间没有分隔符**：值靠下一个 tag 字节终止，整个记录只有一个 `04`。
+字段号是**两个字符**、共 71 个；同一字段的值宽度不固定（同一个价格会写成
+`17.39` / `17.3900` / `17.390000`）。
+
+### 字段表（4 个真实样本、18904 条记录标定）
+
+| tag | 含义 | 证据 |
+|---|---|---|
+| `0T` | 时间 HHMMSS | 每条必有；`83436.000` 这种带小数 |
+| `04` | 昨收 | 全天恒定；且 `1E/1F` 正好是它的 ±10% 取整 |
+| `05` | 开盘 | 只在 09:25 竞价撮合那一刻第一次出现 |
+| `06`/`07` | 最高/最低 | 逐笔刷新日内极值 |
+| `08` | 最新价 | |
+| `09` | 累计成交笔数 | 单调不减；且**与 0x0FC6 成交明细里 `order_count` 之和 4/4 精确相等**（23175 / 22723 / 66690 / 38070），见 `output/trades_crosscheck_evidence.txt` |
+| `10` | 累计成交量（股） | 单调不减；`1A/10` 恒在 `[最低, 最高]` 内 |
+| `1A` | 累计成交额（元） | 竞价那一笔上 `1A == 10 × 价格` |
+| `1C` | 市盈率 | `1C/08` 每只票恒定（离散度 < 5e-4），同一只票两天同一个比值，亏损票为 0 |
+| `1E`/`1F` | 涨停/跌停 | `== round(1.1×04, 2)` / `round(0.9×04, 2)`，4/4 样本 |
+| `1G`/`1H` | 委买均价 / 总买量 | native 侧恢复的 TdxW 界面标签 `0xCA1330..0xCA1348`；且 `1G ≤ 最新价 ≤ 1I`、`1H ≥ 五档买量和` |
+| `1I`/`1J` | 委卖均价 / 总卖量 | 同上 |
+| `0D` | 阶段文本 `S0 O0 B0 T0 C0 E0 A0` | 一天 9 次迁移 |
+| `20..29`/`30..39` | 买 1..10 价 / 量 | |
+| `40..49`/`50..59` | 卖 1..10 价 / 量 | |
+| `25..29 35..39 45..49 55..59` | 第 6..10 档 | **4 个样本里全部是「字段在、值为空」**，本实现不会替它们编数据 |
+| `1i..1m` | 阶段相关的辅助块 | 每个文件约 2 条 |
+| `0a..0c 1B 1D 1v 1w Z3 Z4` | 从未非空 | 保留为原始 tag，不给名字 |
+
+`09` 在 native 侧被命名为 `open_interest`（期货口径）。现在不用争了：把它和
+`0x0FC6` 成交明细的 `order_count` 逐日对账，4 个样本**分毫不差**，所以它是
+**累计成交笔数**。native 那个名字是期货消费者的残留。
+
+### 重放模型
+
+每只证券维护一张 `tag -> 值` 表；每条记录只覆盖它带的 tag，其余保持不动，
+得到的就是那一刻的完整盘口。**「带了」和「变了」是两件事**，分别上报：
+
+- `changed_tags`：原始文本确实不同的 tag（保真的线上视图）；
+- `changed`：类型化投影不同的逻辑组（`new/time/last/ohlc/limits/trades/volume/
+  amount/book/aggregate/valuation/phase/other`，与 `tdx_diff_mask` 同一风格）。
+
+比较规则只有一条：两边都能整串解析成有限小数就按数值比，否则按去掉尾部填充的
+文本比。所以 `17.3900` 与 `17.390000` 不算变化，`0D` 的尾部空格也不算。
+真实样本里 4647 条有 1 条没带任何变化（首两条 header 记录完全相同）。
+
+JSONL 每行一只票的完整快照，键**永远在**、没收到过的值给 `null`，这样下游不用猜
+「0 是零还是未知」：
+
+```json
+{"type":"zst_snapshot","security_id":"SZ000623","record":4646,"sequence":4646,
+ "time":"15:32:36","time_hhmmss":153236,"changed":["time"],"changed_tags":["0T"],
+ "merged_tags":71,"record_tags":1,"dropped_tags":0,
+ "last_price":17.390000,"pre_close_price":16.720000,"open_price":16.790000,
+ "high_price":17.490000,"low_price":16.730000,"limit_up_price":18.390000,
+ "limit_down_price":15.050000,"trade_count":23175,"volume":16826061,
+ "amount":290028487.9000,"average_price":17.236862,"pe_ratio":8.680000,
+ "aggregate_bid_price":16.910000,"aggregate_bid_volume":839685,
+ "aggregate_ask_price":17.920000,"aggregate_ask_volume":2193166,"phase":"E0",
+ "buy_levels":[{"price":17.380000,"volume":39800}, ...],
+ "sell_levels":[{"price":17.390000,"volume":34700}, ...]}
+```
+
+`volume`/`aggregate_*_volume`/`buy_levels[].volume` 是**股**，`amount` 是**元**，
+`trade_count` 是**笔**。`--raw` 追加 `fields` 对象给出合并后的原始 tag 表。
+
+`record` 是文件内下标，`sequence` 是该证券第几次快照。
+
+### 下载：0x02C5 / 0x06B9 已移植，但公开节点不提供这些文件
+
+两条命令与 JSN 下载是同一对：`0x02C5`(709) 查长度+MD5（请求体 = 路径 NUL 补齐到
+40 字节），`0x06B9`(1721) 分块取（请求体 = `u32 偏移 + u32 长度 + 路径` 补齐到
+308 字节，单块上限 30000）。`day` 会先看本地缓存，没有再走这两个命令，并按服务端
+公布的 MD5 校验。
+
+**实测结论（证据见 `output/zst_transfer_evidence.txt`）**：
+
+- 传输链路本身是对的：用同一套代码从公开节点拉 `bi/list/zq_aaa201.jsn`，
+  **33,414,573 字节、1114 个分块、MD5 `52d2752e…` 逐字节吻合**。
+- `hishf/date/...` 在**全部 48 个 HQHOST** 上都返回
+  `00 00 00 00 01` + 33 个 0，即「长度 0」＝服务端没有这个资源。
+- 把请求头改写成 TdxW 自己发的字节（前缀 0、message id 0、control 0，与抓包
+  `output/tap-tdxw.jsonl` seq 47 逐字节相同）**结果一样**，所以不是组帧差异。
+- 抓包里客户端确实用这个路径请求过（seq 47 是 52 字节的 `0x02C5`，seq 48..52 是
+  5 个 320 字节的 `0x06B9`，正好够 141227 字节），说明这些文件是**在带权益的
+  TdxW 会话里**取到的；无名 7709 会话拿不到。
+
+因此 `day` 现在的用法是：**离线重放客户端已经缓存的 `.img`**（完全可用、已验证），
+需要新日期时要么让 TdxW 自己下下来，要么等权益/口令链路打通。
+
+### 顺带修掉的一个老问题
+
+`connect.cfg` 的键是 `HostNum` / `IPAddress01` / `Port01` 这种大小写混写，而端点
+发现的 INI 查表用 `strcmp` 对小写键做精确比较，于是**每一条都没匹配上**，
+`tdx_endpoint_pool_load` 一直悄悄退化成单个编译内置节点。现在查表折叠大小写，
+48 个节点按 `PrimaryHost` 轮转排好，并补了 `test_endpoint` 把 INI 契约钉住。
+
+### `.zsm` 伴随文件：结构已量出，语义部分标定
+
+`0#<代码>.zsm` 每天追加**固定 39028 字节**（000078 一天 = 39028，000534 两天 =
+78056），说明它是一张预分配的定长表。实测结构（`output/zst_zsm_stride.txt`、
+`output/zst_zsm_crosscheck.txt`）：
+
+```
+每天一块 39028 字节 = 28 字节头 + 1500 个 26 字节槽位
+  头：u32 日期，float32 昨收，float32 开盘，其余为零
+  槽：u8 序号，0x02，float32 A，float32 B，u32 量(手)，12 字节零
+```
+
+证据：
+
+- 三个文件的块头都对得上：`date` 就是 `.img` 文件名里的日期；`昨收`/`开盘`
+  与同一天 `.img` 里 `04`/`05` 的终值一致（4/4 块）。
+- 每天**恰好 240 个槽位非零**，正好是一个交易日的分钟桶数
+  （09:30–11:30 加 13:00–15:00，各 120 分钟）。
+- **每个槽的 `u32` 相加 == 该日 `.img` 的成交量（手），比值 1.0000（4/4 块）**：
+  000623 168261 vs 168260.61、000078 1651282 vs 1651281.78、
+  000534 0911 146077 vs 146076.76、000534 0713 210299 vs 210299.14。
+  所以这个 `u32` 是**那一分钟的成交量（手）**。
+- 最后一个槽的 A 等于当日收盘价（4/4 块）；B 收敛到当日 VWAP 附近
+  （000623 17.2415 vs 17.2369，000534 0713 27.3286 vs 27.3409），
+  所以 B 是**均价**。
+- 整块只有前 ~6.3 KB 被写过，后面全是零填充。
+
+A 到底是「分钟收盘价」还是别的分钟统计量还没定：它和 `.img` 在该分钟键上的
+`08` 不完全相等。这一点留待后续，不要当成已知。
+
+## L1 成交明细：0x0FC5 / 0x0FC6
+
+先说清楚名字，因为「逐笔成交」在本仓库里指两个不同的东西：
+
+| | 命令 | 精度 | 权限 |
+|---|---|---|---|
+| **L1 成交明细**（本节） | `0x0FC5` 当日 / `0x0FC6` 历史 | **分钟** | **公开** |
+| L2 逐笔成交 | 内置 `1364` / SDK `4655`·`1801`，52 字节源记录 | 秒级逐条 | 待授权 |
+
+native 侧自己的措辞是「公开 L1 成交明细，时间精度为分钟；不是 Level2 秒级逐笔
+成交或委托」，`doc/04-current-state.md` 也把「逐笔成交」列在 L2 那一段。
+
+### 线格式
+
+```
+请求  0x0FC5  u8 市场, 0x00, 代码[6], u16 start, u16 count            (12 字节)
+      0x0FC6  u32 日期, u16 市场, 代码[6], u16 start, u16 count        (16 字节)
+应答  0x0FC5  u16 条数, 随后记录
+      0x0FC6  u16 条数, f32 价格基, 随后记录
+记录  u16 日内分钟数, 然后 5 个 varint：价格增量, 成交量(手), 笔数, status, tail
+```
+
+- **价格在页内累加**，累加器从 0 起，而第一条的增量本身就是绝对价格，所以每一页
+  自洽：`start=0` 和 `start=10` 两页的第一条都解出 17.39。跨页不要把累加器接下去。
+- 刻度：代码前缀 `10/11/12/15/16/50/51/52/53/56/58` → 1000，其余 100。
+- `status`：0 买 / 1 卖 / 2 中性（15:00 集合竞价就是 2），其余按 `status_N` 原样报出，
+  5 是 15:00 之后的**盘后固定价格**成交。
+- 分页游标向前走、页是**倒序**回来的（第一页是当天最后一批），所以取完要整体反转。
+  默认每页 1800（当日）/ 2000（历史），上限 100 页；当日模式的日期由 `0x0004`
+  应答的第 6 字节给出（`0x0FC5` 自己的应答不带日期）。
+- 解析要求**刚好消费完**整个应答体，多一个字节就报 trailing，短读不会被当成干净的一页。
+
+### 交叉印证（4/4 精确）
+
+拿 `trades` 和同一天的 `.img` 对账（`output/trades_crosscheck_evidence.txt`）：
+
+| 样本 | 明细 `order_count` 之和（≤15:00） | `.img` 的 `09` | 明细 `volume_hand` 之和 | `.img` 的 `10`/100 |
+|---|---:|---:|---:|---:|
+| sz000623 20260612 | 23175 | 23175 | 168261 | 168260.61 |
+| sz000078 20260907 | 22723 | 22723 | 1651282 | 1651281.78 |
+| sz000534 20260713 | 66690 | 66690 | 210299 | 210299.14 |
+| sz000534 20260911 | 38070 | 38070 | 146077 | 146076.76 |
+
+两条结论：
+
+1. **`09` 就是累计成交笔数**——不再是统计推断，是逐日精确对账。
+2. `.img` 的累计量在 **15:00 收盘截止**，而成交明细还带盘后固定价格那几笔
+   （`time>15:00`、`status=5`）。不按时间切分时明细恒 ≥ `.img`，差值正好是这部分的
+   量，4/4 样本都对得上。
+
+`amount` 有约 0.006% 的对不上，原因是**一个 tick 的价格是该 tick 最后一笔的价格，
+而成交量是整个 tick 的**；跨价 tick 上 `价格 × 量` 不等于真实成交额。这不是解码错。
+
+## 多周期 K 线：0x052D
+
+一条命令服务所有周期，周期是请求里的一个 u16，不是不同命令。
+
+```
+请求 42 字节
+  [0..1]   u16 市场号
+  [2..7]   6 个 ASCII 代码字符，不足 6 位补 0（后面的字段不移动）
+  [8..9]   u16 周期号
+  [10..11] u16 周期参数（恒为 1）
+  [12..13] u16 起始记录
+  [14..15] u16 条数，1..800
+  [16..41] 0
+应答
+  u16 条数，随后每条
+    分钟级周期： u16 LC1 日期字, u16 日内分钟数
+    日线及更慢： u32 日期 YYYYMMDD
+    varint 开 相对【上一条的收】的增量
+    varint 收 相对本条开的增量
+    varint 高 相对本条开的增量
+    varint 低 相对本条开的增量
+    u32 量、u32 额（wire 浮点）
+    仅指数模式： u16 涨家数, u16 跌家数
+```
+
+| 周期 | id | 分钟级 |
+|---|---:|---|
+| `time` / `1m` | 7 | 是（共用一个 id，`--period` 决定回报哪个名字） |
+| `5m` / `15m` / `30m` / `60m`(`1h`) | 0 / 1 / 2 / 3 | 是 |
+| `day` / `week` / `month` | 4 / 5 / 6 | 否 |
+
+三个容易搞错、所以被测试钉住的点：
+
+1. **价格是千分位**（`milli / 1000`），不是报价和成交明细那套 100/1000 刻度。
+2. **增量沿「到达顺序」串接，而服务端先给最新的**，所以时间排序只能在整轮走完之后做。
+3. **LC1 日期字不是天数**：`年 = 字 / 2048 + 2004`，余数是 `月*100+日`；只覆盖 2004 年以后。
+   所以字 101 是 2004-01-01，字 309 是 2004-03-09。
+
+指数模式的自动识别只看 `880xxx`/`881xxx`（通达信板块指数，挂在上交所市场号上）。
+像 `sh000001` 这种普通指数代码要显式给 `--index`——这条规则与 native 侧一致。
+
+### 交叉印证（五方一致）
+
+`output/kline_crosscheck_evidence.txt`：
+
+- **日线 vs `.img`（sz000623 20260612）**：日线 `open 16.790 / high 17.490 / low 16.730 /
+  close 17.390`，`.img` 的 `05/06/07/08` 逐项相同；`volume 16826060` vs `.img` 的
+  `10 = 16826061`（差 1 股）、`amount 290028480` vs `1A = 290028487.9`（差 8 元），
+  都是 wire 浮点精度量级。
+- **1m vs `.zsm` 分钟槽**：20260612 有 **240 根 1m bar**，`.zsm` 有 **240 个槽**；
+  逐行 `1m close == zsm A`、`1m volume == zsm C × 100`，6/6 行精确。
+- **1m vs 成交明细**：20260921 的 15:00 bar `close 17.750 / volume 109700 股`，成交明细
+  同一分钟 `price 17.75 / volume 1097 手 / status 2`，完全相等。
+- 分钟 240 根求和 `16826100` 与 `.zsm` 240 槽求和 `168261 手` 完全相等；与日线的
+  `16826060` 差 40 股（2.4e-6），是两条聚合路径的舍入残差，不是解码错误。
+
+### 顺带闭合：`.zsm` 的 A 字段
+
+上一轮把 `.zsm` 槽位里的 A 标为「未知的分钟统计量」。现在不用猜了：**A 就是分钟收盘价**，
+C 是该分钟成交量（手），B 是累计均价。K 线的 1m bar 与 `.zsm` 槽位一一对应。
+
+## 分时：0x0537（当日）
+
+**这一块不是移植，是原始逆向。** `0x0537`/`0x0FB4` 在
+`doc/02-engine/07-useful-live-features.md` 里被记为「已确认」，但**全树没有实现**，
+也没有留下当时的探测脚本。所以请求与应答格式是从活体服务器复原的，过程与 1173
+字节应答原文见 `output/timeline_probe_evidence.txt`。
+
+```
+请求 12 字节
+  u8 市场, u8 0, 代码[6], [8..11] 服务端不解释
+应答
+  u16 点数（一个交易日 240 点）
+  u16 保留（观测为 0）
+  每点三个 varint：
+    价格偏移   第 0 点放本段基点（1/100 元）；之后每点是【相对该基点的偏移】
+    均价偏移   同形，1/10000 元
+    成交量     该分钟成交量（手）
+  所以 price[i] = (基点 + 偏移[i]) / 100，第 0 点的偏移读作 0
+```
+
+三个要点：
+
+1. **`a[i]` 不是逐点增量，是相对第 0 点基点的偏移。** 第一版按增量读，价格从 17.60
+   一路漂到 30.35；改成偏移后 **240/240 精确**。注释里专门写了这个坑。
+2. **后 4 字节服务端不解释**：发 `00 00 00 00` 和发 `04 27 35 01`（一个日期）返回
+   **逐字节相同**的应答。所以没有分页、没有起始偏移，一次就是整段。
+3. **应答不带时间**，只有顺序；点位标签是 `09:31..11:30` 然后 `13:01..15:00`
+   （前 120 点上午，跳过午休），与 0x052D 的 1m 标签一致。
+
+### 对账（240/240）
+
+`output/timeline_crosscheck_evidence.txt`：
+
+| 对照 | 结果 |
+|---|---|
+| 分时 `price` vs 同日 1m K 线 `close` | **240/240 精确相等** |
+| 分时 `volume_hand` vs 同日 1m `volume/100` | **240/240 精确相等** |
+| 分时量合计 | 87389 手 = 日线 bar 的 8738903 股/100 = 成交明细 ≤15:00 的合计 |
+| 分时末日 `average_price` | 17.65500 vs 日线 VWAP 17.65498 |
+
+这同时给了 0x052D 的 1m 分页一个**独立验证**：两条互不依赖的命令给出同一串分钟量。
+
+`0x0FB4`（指定日期分时）的**请求格式还没复原**——试过的候选体（`u32 日期+u16 市场+代码`、
+其上加 `start/count`、以及 `u16 市场+代码+u32 日期` 等）全部被服务端以静默回应。
+`timeline --date` 会明确报「未复原」，而不是发一个猜测然后拿空序列当成功。
+要复盘历史某天，现在用 `kline --period 1m`（已验证与 `.zsm` 逐分钟吻合）。
 
 ## 服务端路由
 
@@ -272,12 +638,20 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_frame` | 组帧字节级断言、响应头、zlib 往返与损坏流 |
 | `test_quote` | 证券解析、价格刻度、varint 往返、深度记录编解码、拒绝路径 |
 | `test_directory` | 品种/板块分类 32 例、0x044D 页解析、市场号覆盖、截断 |
+| `test_endpoint` | 端点解析、`connect.cfg` 大小写混写键、PrimaryHost 轮转、缺文件回退 |
 | `test_pool` | **回环假 7709 服务器**上的批切分、顺序、截断、重连 |
 | `test_state` | 八组差分、多组并集、哈希表扩容零丢失、市场不碰撞 |
 | `test_hub` | 首轮快照、相同轮静默、变化掩码、过滤订阅、未知代码、队列丢弃、失败计数、快照 JSON、分层梯子 |
+| `test_zst` | tag 流分帧与拒绝路径、值的数值/文本等价、状态累加、只带变化时的前向折叠、多证券隔离、逻辑组掩码、JSON 渲染（含 `null` 与原始 tag 表）、**真实样本 4647 条的不变量与末日终值** |
+| `test_download` | RFC 1321 MD5 向量与分块喂入一致、路径校验、`0x02C5`/`0x06B9` 请求字节级断言、两种应答的解析与拒绝、`day` 路径拼装 |
+| `test_trades` | 分钟/买卖方向/刻度/日历校验、两种请求的字节级断言、**活体应答原文**的五个 varint 记录解码、负数增量与累加、分钟越界与悬挂 varint 的拒绝、分页尾部未消费检测、汇总分桶、JSONL 括号平衡与 `null` |
+| `test_kline` | 周期别名表（含 `time`/`1m` 共用 id 7）、LC1 日期字解码、`880xxx` 板块指数判定、42 字节请求字段布局与补零、**三份活体应答原文**（日线/分钟/指数）的两种日期编码与 breadth 字段、指数字节当股票解析必须失败、时间排序、JSONL 括号平衡与 `null` |
+| `test_timeline` | 点位→时间标签映射（含午休跳段）、12 字节请求布局、**1173 字节活体应答**的 240 点解码、基点+偏移的读法（写成增量就会失败）、逐点成交量合计等于当日总量、截断/超帽/尾部未消费与负量的拒绝、JSONL 括号平衡与 `null` |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
-确定性 feed。
+确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
+`test_download` 完全不联网（传输链路的活体验证放在
+`output/zst_transfer_evidence.txt`）。
 
 ## 尚未完成
 
@@ -288,3 +662,19 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
    （Windows 走的是控制台关闭事件 `0xC000013A`，不经过本处理器）。需要在前台
    控制台手按一次。
 3. 按订阅者集合进一步裁剪**批次数**（现在是按下标集合重排，批次边界可以更紧凑）。
+4. **指定日期分时 `0x0FB4` 与集合竞价序列 `0x056A`**：`0x0FB4` 的请求格式还没复原
+   （见上文，候选体都被静默回应）；`0x056A` 在 native 侧已实现（`src/market/auction.cpp`），
+   是下一块可移植的对象。`0x054C` 全量快照同理——`tdx_quote.h` 里只剩两个没人引用的
+   常量（`TDX_CMD_SNAPSHOT`、`TDX_SNAPSHOT_BATCH_MAX`），是半拉子脚手架，要么补实现
+   要么删掉。
+5. **L2 秒级逐笔成交 / 逐笔委托**：交易所口径的那个，走内置 `1364`/`1374` 或
+   SDK `4655`/`1801`/`1802`，需要授权业务事件。本仓库只做到结构确认与被动探针，
+   `c/` 侧没做——公开会话拿不到，做了也无法验证。
+6. `.img` 的累计字段止于 15:00，而成交明细含盘后固定价格成交（`status=5`）。
+   两者口径不同是**已验证的事实**，不是缺口；用的时候记得按 `time` 或 `status` 切。
+7. `1i..1m` 这个阶段辅助块还没有语义。
+9. **公开基础数据**都没进 `c/`：财务基础信息（`0x0010`）、股本变迁/除权（`0x000F`）；
+   资源类也只接了 `hishf/date/*.img`，JSN/`zhb`/权息/财务的解析器都没有——传输层
+   （`0x02C5`/`0x06B9`）是通的，缺的是各自的载荷解析。
+8. **历史 `.img` 的公网取数被挡**：见上文，公开节点一律报长度 0；需要恢复带权益
+   会话的握手/口令链路，或继续依赖客户端自己的缓存。
