@@ -6,11 +6,16 @@
 
 - `doc/`：研究文档、阶段结论、Python 脚本和测试。
 - `ida/`：IDA Pro 反编译数据库（不入 Git，见 `.gitignore`）。
+- `c/`：纯 C（C11）的 L1 行情客户端与常驻推流服务，见 [c/README.md](c/README.md)。
 - `doc/captures/README.md`：离线证据清单；原始证据本身不入库。
 
 更完整的文档入口见 [doc/README.md](doc/README.md)。
 
 通达信上游请求的地址、用途、输入和输出见 [通达信上游 API 调用速查](doc/API.md)。
+
+需要长期运行的行情流服务时用 [c/README.md](c/README.md)（单 exe + zlib，
+无 Python / 无 C++ 运行时）：全市场 5,574 只 A 股一轮约 0.5 s，按订阅裁剪、
+只推变化，并提供只读 HTTP/SSE 接口。
 
 直接调用可用独立脚本 [tdx_api.py](tdx_api.py)（Python 3.10+，仅标准库，复制单个文件即可运行）：
 
