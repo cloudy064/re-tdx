@@ -56,6 +56,8 @@ add_library(tdxl1core STATIC
     src/tdx_limits_json.c
     src/tdx_json.c
     src/tdx_jsn.c
+    src/tdx_bonds.c
+    src/tdx_bonds_json.c
 )
 target_include_directories(tdxl1core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -96,7 +98,8 @@ foreach(pair "frame:test_frame" "quote:test_quote" "directory:test_directory"
              "download:test_download" "endpoint:test_endpoint" "trades:test_trades"
              "kline:test_kline" "timeline:test_timeline" "auction:test_auction"
              "snapshot:test_snapshot" "finance:test_finance" "capital:test_capital"
-             "gbbq:test_gbbq" "limits:test_limits" "json:test_json" "jsn:test_jsn")
+             "gbbq:test_gbbq" "limits:test_limits" "json:test_json" "jsn:test_jsn"
+             "bonds:test_bonds")
     string(REPLACE ":" ";" parts "${pair}")
     list(GET parts 0 name)
     list(GET parts 1 source)

@@ -52,6 +52,8 @@ c/
     tdx_limits_json.h     涨跌停记录的 JSONL 渲染
     tdx_json.h            有界 JSON 解析器
     tdx_jsn.h             JSN 表格格式与 GBK 转换
+    tdx_bonds.h           债券字段映射与单位语义
+    tdx_bonds_json.h      债券行的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -66,6 +68,7 @@ c/
     tdx_finance.c  tdx_finance_json.c  tdx_capital.c  tdx_capital_json.c
     tdx_gbbq.c  gbbq_cipher_state.h (generated)
     tdx_limits.c  tdx_limits_json.c  tdx_json.c  tdx_jsn.c
+    tdx_bonds.c  tdx_bonds_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -80,6 +83,7 @@ c/
     test_limits.c    limits_fixtures.h (generated)
     test_json.c      (grammar vectors, no capture)
     test_jsn.c       jsn_fixtures.h (generated, whole raw GBK payload)
+    test_bonds.c     (captured + synthetic cases, labelled)
 ```
 
 ## 构建
@@ -98,7 +102,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-20/20 测试通过、0 warning。
+21/21 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -194,6 +198,10 @@ tdx-l1stream limits --root C:\new_tdx --output output\limits.jsonl
 # JSN 资源（GBK 编码的 JSON 表格，走 0x02C5/0x06B9 传输）
 tdx-l1stream jsn --resource list/zq_tx201.jsn --root C:\new_tdx `
                 --output output\jsn-zq_tx201.jsonl
+
+# 同一份资源按债券字段映射（规模列的单位随资源而定）
+tdx-l1stream jsn --resource list/zq_gz201_1.jsn --bonds --root C:\new_tdx `
+                --output output\bonds-zq_gz201_1.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -909,6 +917,61 @@ GBK→UTF-8 的长度变化本身就是证据：中文字符两字节变三字�
 
 证据：`output/jsn_verification_evidence.txt`。
 
+## JSN 之上的债券字段映射（`jsn --bonds`）
+
+JSN 层保证"某格就是它表头所说的那一格"；这一层是**领域知识**：哪一列是哪个字段、市场怎么写，
+以及最微妙的一点——**发行规模那一列到底是什么单位**。
+
+### 单位取决于来自哪个资源（这是本层存在的理由）
+
+同一列 `GM`，三个资源读出三种含义，都是活体实测：
+
+| 资源 | scale | `GM` 原始值 | 换算 |
+|---|---|---:|---|
+| `list/zqgz201.jsn`（客户端合并表） | `client-master-hidden-unit` | 56,000,000,000 | **不换算**（单位不可复原） |
+| `list/zq_gz201_1.jsn`（沪市投影） | `outstanding-balance-100m-yuan` | 260 | **260 亿元**（存量） |
+| `list/zq_jrz201_1.jsn`（政策性金融债） | `issue-size-100m-yuan` | 100 | **100 亿元**（发行量） |
+
+所以只报一个 "size" 数字，在三种情况里至少两种是错的。归一化后的行因此同时给出：
+**原始值**、**读出它时采用的语义**、以及**只有该语义才支持的那个换算字段**；
+单位不可复原时两个换算字段都留空，不猜。
+
+### profile 表：20 条，逐条来自参考实现
+
+- **7 个客户端合并表**（`reference_master = true`）：`zqjrz201` → `issue-100m-yuan`，
+  其余 6 个 → `client-master-hidden-unit`
+- **12 个交易所投影**（`_1` 沪 / `_2` 深）：`zq_jrz201_1/2` → `issue-100m-yuan`，
+  其余 → `outstanding-100m-yuan`
+- 表外资源：默认 `issue-yuan`（与参考实现一致）
+
+**合并表会交换身份列**：客户端合并表用自己的 `$ZQDM1`/`$SC1` 作身份、把 `$ZQDM`
+报为 `client_instrument_id`；投影表相反。映射按 profile 走，不假定一种顺序。
+
+### 票息表
+
+`FXRQXL` 与 `FXLLXL` 是逗号分隔的列表，按下标配对。利率归一化（照参考实现）：
+**`|值| ≤ 1` 视为分数，乘 100 变百分比**；否则视为已是百分比。例：`0.035` → 3.5%、
+`3.5` → 3.5%。利率比日期少时，多出的日期保留但利率为空（不是填错值）。
+调度表长于调用方缓冲区时**拒绝**——截断会静默丢掉票息。
+
+### 验证与限制（诚实说明）
+
+仓库里只有贴现名单这一份债券资源抓包，所以分工是：
+
+| 覆盖 | 依据 |
+|---|---|
+| 默认 profile、身份取自 `$ZQDM`/`$SC`、字段映射、渲染 | **真实抓包**（`list/zq_tx201.jsn`，42 行，中文精确比对） |
+| 合并表的身份交换、投影的标的关系、三种单位语义、票息表 | **合成文档**（测试里明确标注 `SYNTHETIC`） |
+| 规模端到端 | **全市场债券 42,957 行**，约 70 秒 |
+
+两个被测试抓出的错误都在测试侧：我把含 UTF-8 中文的合成 JSON 送进了 GBK 解码器
+（只有线上载荷是 GBK），解码器正确地拒绝了它，而测试随后又无条件访问 `groups[0]`
+于是段错误而不是报错；以及归一化行的文本字段是**零拷贝**指向 JSN 文档 arena 的，
+我第一版却经过 `tdx_buf` 取文本再 free 缓冲区——那是悬空指针，因为缓冲区持有的是副本
+（为此给 JSN 层加了真正的零拷贝视图 `tdx_jsn_cell_view`）。
+
+证据：`output/bonds_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1099,6 +1162,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_limits` | 14 字节请求布局与 16 位下标边界、**真实 15 字节单行应答**的解码、代码数字补零成 6 位、涨跌停中点=1.58 的取值、合成多行页的列表解码与页起始下标延续、长度不符/输出不足/市场非法/代码超 6 位/涨停低于跌停/NaN 的拒绝 |
 | `test_json` | 标量/容器语法、全部转义与 surrogate 对（含孤立 surrogate 变 U+FFFD）、**多段拼接字符串必须连续**、**成员名与成员值各存一份**、嵌套数组的兄弟链表、深度上限、尾随数据/尾随逗号/缺冒号/缺逗号/前导零/未闭合/未知转义的拒绝、整数读取 |
 | `test_jsn` | 资源路径前缀规范化（前导斜杠、已带前缀不重复）、**整份真实 GBK 载荷**的转换与解析（长度必须变长）、42 行 × 20 列、中文列值精确比对、空单元格保留为空串而非 null、根非数组/缺 colheader-data/**行宽与表头不符**/行非数组的拒绝 |
+| `test_bonds` | 20 条 profile 的分类与前缀/斜杠写法、市场命名（含 44→bj 与未知市场的 `M<n>:`）、**抓包资源**的完整字段映射与中文精确比对、三种单位语义各自的换算与"不换算"、合并表/投影的身份列交换与标的、票息表配对与 `|值|≤1 乘 100` 规则、日期多于利率/空表/缓冲区不足（拒绝截断）、缺代码列/市场非数字的拒绝、渲染括号平衡 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1107,8 +1171,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **JSN 之上的领域映射**：本层只到表格，债券目录/可转债/权息各自"哪一列是什么"
-   还没移植；这是纯数据映射，最省事的做法是照参考实现的列名逐条对。
+6. **可转债/权息等其余 JSN 资源的领域映射**：机制已经就位（profile + 列映射），缺的是各自的表。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi

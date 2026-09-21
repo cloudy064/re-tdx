@@ -181,6 +181,35 @@ int tdx_jsn_cell_json(const tdx_jsn_document *doc, const tdx_jsn_group *group,
     }
 }
 
+int tdx_jsn_cell_view(const tdx_jsn_document *doc, const tdx_jsn_group *group,
+                      size_t row_in_group, size_t column, const char **data, size_t *length,
+                      int *present, tdx_error *err) {
+    const tdx_json_node *node;
+
+    if (data)
+        *data = NULL;
+    if (length)
+        *length = 0;
+    if (present)
+        *present = 0;
+    if (!doc || !group) {
+        tdx_error_set(err, "a cell view needs a document and a group");
+        return TDX_ERR;
+    }
+    node = cell_node(doc, group, row_in_group, column);
+    if (!node)
+        return TDX_OK;
+    if (present)
+        *present = 1;
+    if (node->type != TDX_JSON_STRING)
+        return TDX_OK; /* present but not text; the caller formats it */
+    if (data)
+        *data = tdx_json_text(&doc->json, node);
+    if (length)
+        *length = node->text_length;
+    return TDX_OK;
+}
+
 int tdx_jsn_cell_text(const tdx_jsn_document *doc, const tdx_jsn_group *group,
                       size_t row_in_group, size_t column, tdx_buf *out, tdx_error *err) {
     const tdx_json_node *node;

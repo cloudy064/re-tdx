@@ -70,6 +70,14 @@ int tdx_jsn_cell_json(const tdx_jsn_document *doc, const tdx_jsn_group *group, s
 int tdx_jsn_cell_text(const tdx_jsn_document *doc, const tdx_jsn_group *group,
                       size_t row_in_group, size_t column, tdx_buf *out, tdx_error *err);
 
+/* A ZERO-COPY view of a string cell: *data points into the document's own arena and
+ * stays valid exactly as long as the document does.  A cell that exists but is not
+ * a JSON string reports present=1 with data=NULL, so a caller knows to format it
+ * instead.  A missing cell reports present=0. */
+int tdx_jsn_cell_view(const tdx_jsn_document *doc, const tdx_jsn_group *group,
+                      size_t row_in_group, size_t column, const char **data, size_t *length,
+                      int *present, tdx_error *err);
+
 /* GBK to UTF-8 through the platform code page. */
 int tdx_jsn_gbk_to_utf8(const uint8_t *data, size_t size, tdx_buf *out, tdx_error *err);
 

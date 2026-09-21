@@ -22,6 +22,8 @@
 
 #include "tdx_auction.h"
 #include "tdx_auction_json.h"
+#include "tdx_bonds.h"
+#include "tdx_bonds_json.h"
 #include "tdx_capital.h"
 #include "tdx_capital_json.h"
 #include "tdx_directory.h"
@@ -131,7 +133,11 @@ static void usage(void) {
            (unsigned)TDX_LIMITS_MAX_RECORDS);
     printf("jsn:\n");
     printf("  --resource PATH      resource under the prefix, e.g. list/zq_aaa201.jsn\n");
-    printf("  --prefix NAME        resource prefix, default bi\n\n");
+    printf("  --prefix NAME        resource prefix, default bi\n");
+    printf("  --bonds              map the rows as bond reference rows instead of raw\n");
+    printf("                       cells; the size column's unit then follows the\n");
+    printf("                       resource's own profile\n");
+    printf("  --schedule           also expand the coupon schedule arrays\n\n");
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -189,6 +195,8 @@ typedef struct cli_options {
     const char *gbbq_path; /* NULL means <root>\T0002\hq_cache\gbbq */
     const char *resource;
     const char *prefix;
+    int bonds;
+    int schedule;
 } cli_options;
 
 static void options_init(cli_options *options) {
@@ -317,6 +325,14 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
         }
         if (strcmp(argument, "--local") == 0) {
             options->capital_local = 1;
+            continue;
+        }
+        if (strcmp(argument, "--bonds") == 0) {
+            options->bonds = 1;
+            continue;
+        }
+        if (strcmp(argument, "--schedule") == 0) {
+            options->schedule = 1;
             continue;
         }
         if (index + 1 >= argc) {
@@ -2097,6 +2113,9 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
     size_t row;
     size_t group_count = 0;
     size_t row_count = 0;
+    size_t bonds_named = 0;
+    size_t bonds_underlying = 0;
+    size_t bonds_sized = 0;
     int status = TDX_ERR;
 
     if (!options->resource || !*options->resource) {
@@ -2138,6 +2157,49 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
 
         for (row = 0; row < group->row_count; ++row) {
             tdx_buf_clear(&line);
+            if (options->bonds) {
+                tdx_bond_row bond;
+                tdx_error step;
+                step.message[0] = '\0';
+                if (tdx_bonds_normalize(&document, group, row, remote, &bond, &step) != TDX_OK) {
+                    /* A row whose identity cannot be formed cannot be attributed to
+                     * a security, so it is reported rather than skipped. */
+                    *err = step;
+                    goto close_output;
+                }
+                if (tdx_bonds_format(&line, &bond, remote, group_index, row, err) != TDX_OK)
+                    goto close_output;
+                if (bond.name_resolved)
+                    bonds_named++;
+                if (bond.has_underlying)
+                    bonds_underlying++;
+                if (bond.has_source_scale)
+                    bonds_sized++;
+                if (options->schedule) {
+                    /* Inserted before the closing brace so the row stays one object. */
+                    if (line.len > 0)
+                        line.len--;
+                    if (tdx_buf_append(&line, ",\"coupon_schedule\":", 19, err) != TDX_OK)
+                        goto close_output;
+                    if (tdx_bonds_format_schedule(&line, &document, group, row, "FXRQXL",
+                                                  "FXLLXL", 512, err) != TDX_OK)
+                        goto close_output;
+                    if (tdx_buf_append(&line, ",\"remaining_coupon_schedule\":", 29, err) != TDX_OK)
+                        goto close_output;
+                    if (tdx_bonds_format_schedule(&line, &document, group, row, "SYFXRQXL",
+                                                  "SYFXLLXL", 512, err) != TDX_OK)
+                        goto close_output;
+                    if (tdx_buf_push(&line, '}', err) != TDX_OK)
+                        goto close_output;
+                }
+                if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+                    goto close_output;
+                if (fwrite(line.data, 1, line.len, stream) != line.len) {
+                    tdx_error_set(err, "cannot write the bond stream");
+                    goto close_output;
+                }
+                continue;
+            }
             if (tdx_buf_append_printf(&line, err,
                                       "{\"type\":\"jsn_row\",\"resource\":\"%s\",\"group\":%zu,"
                                       "\"row\":%zu",
@@ -2171,15 +2233,22 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
     group_count = document.group_count;
     row_count = document.row_count;
     tdx_buf_clear(&line);
-    if (tdx_buf_append_printf(&line, err,
-                              "{\"type\":\"jsn_summary\",\"resource\":\"%s\",\"bytes\":%zu,"
-                              "\"md5\":\"%s\",\"groups\":%zu,\"rows\":%zu,\"endpoint\":",
-                              remote, raw.len, info.md5, group_count, row_count) != TDX_OK)
+    if (options->bonds) {
+        if (tdx_bonds_format_summary(&line, row_count, bonds_named, bonds_underlying,
+                                     bonds_sized, remote,
+                                     tdx_bonds_scale_name(tdx_bonds_profile(remote).scale),
+                                     endpoint, err) != TDX_OK)
+            goto close_output;
+    } else if (tdx_buf_append_printf(&line, err,
+                                     "{\"type\":\"jsn_summary\",\"resource\":\"%s\",\"bytes\":%zu,"
+                                     "\"md5\":\"%s\",\"groups\":%zu,\"rows\":%zu,\"endpoint\":",
+                                     remote, raw.len, info.md5, group_count, row_count) != TDX_OK) {
         goto close_output;
-    if (tdx_format_json_string(&line, endpoint, err) != TDX_OK)
+    } else if (tdx_format_json_string(&line, endpoint, err) != TDX_OK) {
         goto close_output;
-    if (tdx_buf_append(&line, "}", 1, err) != TDX_OK)
+    } else if (tdx_buf_append(&line, "}", 1, err) != TDX_OK) {
         goto close_output;
+    }
     if (tdx_buf_push(&line, '\n', err) != TDX_OK)
         goto close_output;
     if (fwrite(line.data, 1, line.len, stream) != line.len) {
