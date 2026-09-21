@@ -26,6 +26,8 @@
 #include "tdx_bonds_json.h"
 #include "tdx_capital.h"
 #include "tdx_capital_json.h"
+#include "tdx_convertible.h"
+#include "tdx_convertible_json.h"
 #include "tdx_directory.h"
 #include "tdx_download.h"
 #include "tdx_finance.h"
@@ -137,6 +139,9 @@ static void usage(void) {
     printf("  --bonds              map the rows as bond reference rows instead of raw\n");
     printf("                       cells; the size column's unit then follows the\n");
     printf("                       resource's own profile\n");
+    printf("  --convertible        map the rows as convertible-bond overview rows; only\n");
+    printf("                       the overview document, not the reference's six-document\n");
+    printf("                       join\n");
     printf("  --schedule           also expand the coupon schedule arrays\n\n");
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
@@ -196,6 +201,7 @@ typedef struct cli_options {
     const char *resource;
     const char *prefix;
     int bonds;
+    int convertible;
     int schedule;
 } cli_options;
 
@@ -329,6 +335,10 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
         }
         if (strcmp(argument, "--bonds") == 0) {
             options->bonds = 1;
+            continue;
+        }
+        if (strcmp(argument, "--convertible") == 0) {
+            options->convertible = 1;
             continue;
         }
         if (strcmp(argument, "--schedule") == 0) {
@@ -2116,6 +2126,9 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
     size_t bonds_named = 0;
     size_t bonds_underlying = 0;
     size_t bonds_sized = 0;
+    size_t convertible_complete = 0;
+    size_t convertible_exchangeable = 0;
+    size_t convertible_underlying = 0;
     int status = TDX_ERR;
 
     if (!options->resource || !*options->resource) {
@@ -2157,6 +2170,31 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
 
         for (row = 0; row < group->row_count; ++row) {
             tdx_buf_clear(&line);
+            if (options->convertible) {
+                tdx_convertible_row bond;
+                tdx_error step;
+                step.message[0] = '\0';
+                if (tdx_convertible_normalize(&document, group, row, &bond, &step) != TDX_OK) {
+                    *err = step;
+                    goto close_output;
+                }
+                if (tdx_convertible_format(&line, &bond, remote, group_index, row, err) !=
+                    TDX_OK)
+                    goto close_output;
+                if (bond.core_terms_complete)
+                    convertible_complete++;
+                if (bond.kind == TDX_CONVERTIBLE_EXCHANGEABLE)
+                    convertible_exchangeable++;
+                if (bond.has_underlying)
+                    convertible_underlying++;
+                if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+                    goto close_output;
+                if (fwrite(line.data, 1, line.len, stream) != line.len) {
+                    tdx_error_set(err, "cannot write the convertible-bond stream");
+                    goto close_output;
+                }
+                continue;
+            }
             if (options->bonds) {
                 tdx_bond_row bond;
                 tdx_error step;
@@ -2233,7 +2271,12 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
     group_count = document.group_count;
     row_count = document.row_count;
     tdx_buf_clear(&line);
-    if (options->bonds) {
+    if (options->convertible) {
+        if (tdx_convertible_format_summary(&line, row_count, convertible_complete,
+                                           convertible_exchangeable, convertible_underlying,
+                                           remote, endpoint, err) != TDX_OK)
+            goto close_output;
+    } else if (options->bonds) {
         if (tdx_bonds_format_summary(&line, row_count, bonds_named, bonds_underlying,
                                      bonds_sized, remote,
                                      tdx_bonds_scale_name(tdx_bonds_profile(remote).scale),

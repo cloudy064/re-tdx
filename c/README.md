@@ -54,6 +54,8 @@ c/
     tdx_jsn.h             JSN 表格格式与 GBK 转换
     tdx_bonds.h           债券字段映射与单位语义
     tdx_bonds_json.h      债券行的 JSONL 渲染
+    tdx_convertible.h     可转债概览字段映射
+    tdx_convertible_json.h 可转债行的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -68,7 +70,7 @@ c/
     tdx_finance.c  tdx_finance_json.c  tdx_capital.c  tdx_capital_json.c
     tdx_gbbq.c  gbbq_cipher_state.h (generated)
     tdx_limits.c  tdx_limits_json.c  tdx_json.c  tdx_jsn.c
-    tdx_bonds.c  tdx_bonds_json.c
+    tdx_bonds.c  tdx_bonds_json.c  tdx_convertible.c  tdx_convertible_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -84,6 +86,7 @@ c/
     test_json.c      (grammar vectors, no capture)
     test_jsn.c       jsn_fixtures.h (generated, whole raw GBK payload)
     test_bonds.c     (captured + synthetic cases, labelled)
+    test_convertible.c  convertible_fixtures.h (generated, reduced capture)
 ```
 
 ## 构建
@@ -102,7 +105,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-21/21 测试通过、0 warning。
+22/22 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -202,6 +205,10 @@ tdx-l1stream jsn --resource list/zq_tx201.jsn --root C:\new_tdx `
 # 同一份资源按债券字段映射（规模列的单位随资源而定）
 tdx-l1stream jsn --resource list/zq_gz201_1.jsn --bonds --root C:\new_tdx `
                 --output output\bonds-zq_gz201_1.jsonl
+
+# 可转债概览（只映射概览文档，不做参考实现的六文档连接）
+tdx-l1stream jsn --resource list/kzz_kzzsy201_1.jsn --convertible `
+                --root C:\new_tdx --output output\convertible.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -972,6 +979,61 @@ JSN 层保证"某格就是它表头所说的那一格"；这一层是**领域知
 
 证据：`output/bonds_verification_evidence.txt`。
 
+## 可转债概览（`jsn --convertible`）
+
+`bi/list/kzz_kzzsy201_1.jsn`：**314 行 × 55 列 / 200 KB**（活体实测），首行是南方航空转债。
+
+### 这一层【只是概览】——范围声明
+
+参考实现的可转债视图是**六份文档的连接**：概览 / 进度 / 票息 / 回售 / 赎回 / 下修，
+按债券的市场+代码做键，外加最多两份换股投影，再挂三份触发条款文档。
+
+本模块**只做概览**：单份资源、没有连接语义、可以独立端到端验证，而字段知识
+（二十来个条款、评级、日期、比例）就在这一份里。**连接、触发条款、票息利率数组、
+投影优先级都没有移植**——汇总里用 `documents_joined:1` 和 `join_note` 明说，
+而不是留给调用方去发现。
+
+### 字段
+
+| 组 | 字段 |
+|---|---|
+| 身份 | `bond.{market,security_id,code,name}`；`instrument_type`（**代码以 132 开头 = 可交换债**，否则可转债）；`underlying.*` |
+| 条款 | 面值、发行价、转股价、发行规模（亿）、剩余规模（亿）、剩余比例、剩余年限、到期赎回价、回售触发比例、赎回触发比例 |
+| 日期 | 上市、发行、转股起、转股止、到期 |
+| 评级/状态 | 债项评级、主体评级、当前状态 |
+| 派生 | `core_terms_complete`——参考实现自己的完整性判据：**面值、转股价、到期日三者齐备** |
+
+### 一个与参考实现矛盾的列：`ZGDM`
+
+参考实现把 `ZGDM` 绑成**"正股名称"**（`security_document` 的第三个参数是 fallback name）。
+全量 314 行实测：
+
+| 内容 | 行数 |
+|---|---:|
+| 六位数字（代码） | **217** |
+| 空 | 97 |
+| 其他（含名称） | **0** |
+
+样本：`190075, 190076, 190077, 190081, 190084`。**它从来不是名称。**
+
+本模块因此把它放在 `underlying.reference_code` 名下（它实际装的东西），并在测试里对抓包行
+断言"要么空、要么六位数字"。这与财务那三个股本类别槽位是同一类处理：照抄参考实现的绑定
+会给出误导性标签，所以**改标签、留实测、写清楚**。
+
+### 验证
+
+| 检验 | 结果 |
+|---|---|
+| 314 行全部映射并渲染，**0 行不可解析** | ✅ |
+| `core_terms_complete` | 314/314 |
+| 有标的 | 314/314 |
+| 抓包 fixture（55 列 + 前 3 行，逐值真实） | 字段逐个断言，中文精确比对 |
+
+另有一个诚实的说明：参考实现在概览资源里读 `LLZH`（未付利息合计），但**该列不在本资源中**，
+实测全部为空（不是 0）——这正是 `has_*` 标志存在的意义。
+
+证据：`output/convertible_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1163,6 +1225,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_json` | 标量/容器语法、全部转义与 surrogate 对（含孤立 surrogate 变 U+FFFD）、**多段拼接字符串必须连续**、**成员名与成员值各存一份**、嵌套数组的兄弟链表、深度上限、尾随数据/尾随逗号/缺冒号/缺逗号/前导零/未闭合/未知转义的拒绝、整数读取 |
 | `test_jsn` | 资源路径前缀规范化（前导斜杠、已带前缀不重复）、**整份真实 GBK 载荷**的转换与解析（长度必须变长）、42 行 × 20 列、中文列值精确比对、空单元格保留为空串而非 null、根非数组/缺 colheader-data/**行宽与表头不符**/行非数组的拒绝 |
 | `test_bonds` | 20 条 profile 的分类与前缀/斜杠写法、市场命名（含 44→bj 与未知市场的 `M<n>:`）、**抓包资源**的完整字段映射与中文精确比对、三种单位语义各自的换算与"不换算"、合并表/投影的身份列交换与标的、票息表配对与 `|值|≤1 乘 100` 规则、日期多于利率/空表/缓冲区不足（拒绝截断）、缺代码列/市场非数字的拒绝、渲染括号平衡 |
+| `test_convertible` | 可交换债判定（132 前缀，含截断码）、**55 列 × 3 行真实抓包**的字段映射、中文精确比对、`core_terms_complete` 判据、**ZGDM"要么空要么六位数字"的实测断言**、概览缺失列回到"缺失而非 0"、缺代码/市场非数字的拒绝、**渲染括号平衡**（该检查抓出了漏掉的 overview 右括号） |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1171,7 +1234,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **可转债/权息等其余 JSN 资源的领域映射**：机制已经就位（profile + 列映射），缺的是各自的表。
+6. **可转债的其余五份文档与连接**：概览已就位；进度/票息/回售/赎回/下修与按
+   `市场:代码` 的连接、三份触发条款文档、换股投影优先级尚未移植。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi

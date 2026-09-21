@@ -172,6 +172,23 @@ int tdx_bonds_coupon_schedule(const tdx_jsn_document *doc, const tdx_jsn_group *
                               tdx_bond_coupon *out, size_t capacity, size_t *out_count,
                               size_t *list_length, tdx_error *err);
 
+/* --- column access, shared with the other JSN domain layers ------------------ */
+
+/* Reads a column's cell as text, zero copy.  An absent column, an empty value and
+ * a non-string cell all report present = 0; the JSN resources carry their values as
+ * strings, so a non-string cell cannot lose a value in practice. */
+tdx_bond_text tdx_bonds_cell_text(const tdx_jsn_document *doc, const tdx_jsn_group *group,
+                                  size_t row, const char *key);
+
+/* The first of several candidate column names that has a value. */
+tdx_bond_text tdx_bonds_first_cell_text(const tdx_jsn_document *doc, const tdx_jsn_group *group,
+                                        size_t row, const char *const *keys, size_t key_count);
+
+/* Reads a column's cell as a number; returns 0 when it is absent, empty or not a
+ * number, which is how "no value" and "zero" stay distinguishable. */
+int tdx_bonds_cell_number(const tdx_jsn_document *doc, const tdx_jsn_group *group, size_t row,
+                          const char *key, double *out);
+
 #ifdef __cplusplus
 }
 #endif

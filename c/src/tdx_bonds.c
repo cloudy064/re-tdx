@@ -136,16 +136,14 @@ int tdx_bonds_market_id(const char *text, size_t length, int *out, tdx_error *er
  * A cell that is present but not a JSON string is reported as absent for text
  * fields.  The JSN resources carry their values as strings, so this cannot silently
  * lose a value in practice; a caller that needs the JSON form has tdx_jsn_cell_json. */
-static tdx_bond_text cell_text(const tdx_jsn_document *doc, const tdx_jsn_group *group,
-                               size_t row, const char *key, int *absent) {
+tdx_bond_text tdx_bonds_cell_text(const tdx_jsn_document *doc, const tdx_jsn_group *group,
+                                  size_t row, const char *key) {
     tdx_bond_text result;
     size_t column;
 
     result.data = NULL;
     result.length = 0;
     result.present = 0;
-    if (absent)
-        *absent = 1;
     if (!doc || !group || !key)
         return result;
     for (column = 0; column < group->column_count; ++column) {
@@ -155,14 +153,25 @@ static tdx_bond_text cell_text(const tdx_jsn_document *doc, const tdx_jsn_group 
         int present = 0;
         if (!name || strcmp(name, key) != 0)
             continue;
-        if (absent)
-            *absent = 0;
         if (tdx_jsn_cell_view(doc, group, row, column, &data, &length, &present, NULL) != TDX_OK)
             return result;
         if (present && data && length > 0) {
-            result.data = data;
-            result.length = length;
-            result.present = 1;
+            /* The reference TRIMS every text value, and a value that is only
+             * whitespace counts as absent.  Both are observable: a resource that
+             * pads a field would otherwise give this layer trailing spaces the
+             * reference never produces, and a padded empty field would read as
+             * present.  This step was missing from the first bond mapping. */
+            while (length > 0 && isspace((unsigned char)*data)) {
+                data++;
+                length--;
+            }
+            while (length > 0 && isspace((unsigned char)data[length - 1]))
+                length--;
+            if (length > 0) {
+                result.data = data;
+                result.length = length;
+                result.present = 1;
+            }
         }
         return result;
     }
@@ -170,11 +179,12 @@ static tdx_bond_text cell_text(const tdx_jsn_document *doc, const tdx_jsn_group 
 }
 
 /* The first of several candidate column names that has a value. */
-static tdx_bond_text first_cell_text(const tdx_jsn_document *doc, const tdx_jsn_group *group,
-                                     size_t row, const char *const *keys, size_t key_count) {
+tdx_bond_text tdx_bonds_first_cell_text(const tdx_jsn_document *doc,
+                                        const tdx_jsn_group *group, size_t row,
+                                        const char *const *keys, size_t key_count) {
     size_t index;
     for (index = 0; index < key_count; ++index) {
-        tdx_bond_text value = cell_text(doc, group, row, keys[index], NULL);
+        tdx_bond_text value = tdx_bonds_cell_text(doc, group, row, keys[index]);
         if (value.present)
             return value;
     }
@@ -187,9 +197,9 @@ static tdx_bond_text first_cell_text(const tdx_jsn_document *doc, const tdx_jsn_
     }
 }
 
-static int cell_number(const tdx_jsn_document *doc, const tdx_jsn_group *group, size_t row,
-                       const char *key, double *out) {
-    tdx_bond_text text = cell_text(doc, group, row, key, NULL);
+int tdx_bonds_cell_number(const tdx_jsn_document *doc, const tdx_jsn_group *group, size_t row,
+                          const char *key, double *out) {
+    tdx_bond_text text = tdx_bonds_cell_text(doc, group, row, key);
     char scratch[64];
     char *stop = NULL;
     double value;
@@ -219,8 +229,8 @@ static int set_identity(const tdx_jsn_document *doc, const tdx_jsn_group *group,
                         tdx_bond_text *code_out, int *market_id_out, char *market_text,
                         size_t market_size, char *identity, size_t identity_size,
                         tdx_error *err) {
-    tdx_bond_text code = cell_text(doc, group, row, code_key, NULL);
-    tdx_bond_text market_text_value = cell_text(doc, group, row, market_key, NULL);
+    tdx_bond_text code = tdx_bonds_cell_text(doc, group, row, code_key);
+    tdx_bond_text market_text_value = tdx_bonds_cell_text(doc, group, row, market_key);
     char prefix[16];
     int market = -1;
     const char *name;
@@ -275,52 +285,52 @@ int tdx_bonds_normalize(const tdx_jsn_document *doc, const tdx_jsn_group *group,
                      out->market, sizeof(out->market), out->security_id,
                      sizeof(out->security_id), err) != TDX_OK)
         return TDX_ERR;
-    out->name = cell_text(doc, group, row_in_group, "ZQJC", NULL);
+    out->name = tdx_bonds_cell_text(doc, group, row_in_group, "ZQJC");
     out->name_resolved = out->name.present;
 
     if (profile.reference_master)
-        out->client_instrument_id = cell_text(doc, group, row_in_group, "$ZQDM", NULL);
+        out->client_instrument_id = tdx_bonds_cell_text(doc, group, row_in_group, "$ZQDM");
 
-    out->bond_type = cell_text(doc, group, row_in_group, "ZQLX", NULL);
+    out->bond_type = tdx_bonds_cell_text(doc, group, row_in_group, "ZQLX");
     out->bond_credit_rating =
-        first_cell_text(doc, group, row_in_group, bond_rating_keys, 2);
+        tdx_bonds_first_cell_text(doc, group, row_in_group, bond_rating_keys, 2);
     out->issuer_credit_rating =
-        first_cell_text(doc, group, row_in_group, issuer_rating_keys, 2);
-    out->rate_type = cell_text(doc, group, row_in_group, "LLLX", NULL);
-    out->rate_type_flag = cell_text(doc, group, row_in_group, "LLLXBZ", NULL);
-    out->guarantee_status = cell_text(doc, group, row_in_group, "SFDB", NULL);
+        tdx_bonds_first_cell_text(doc, group, row_in_group, issuer_rating_keys, 2);
+    out->rate_type = tdx_bonds_cell_text(doc, group, row_in_group, "LLLX");
+    out->rate_type_flag = tdx_bonds_cell_text(doc, group, row_in_group, "LLLXBZ");
+    out->guarantee_status = tdx_bonds_cell_text(doc, group, row_in_group, "SFDB");
 
-    out->accrual_start_date = first_cell_text(doc, group, row_in_group, accrual_keys, 2);
-    out->maturity_date = first_cell_text(doc, group, row_in_group, maturity_keys, 2);
-    out->next_coupon_date = cell_text(doc, group, row_in_group, "XGFXRQ", NULL);
-    out->last_coupon_date = cell_text(doc, group, row_in_group, "SGFXRQ", NULL);
-    out->listing_date = cell_text(doc, group, row_in_group, "SSRQ", NULL);
-    out->conversion_start_date = cell_text(doc, group, row_in_group, "ZGQSR", NULL);
-    out->conversion_end_date = cell_text(doc, group, row_in_group, "ZGJZR", NULL);
+    out->accrual_start_date = tdx_bonds_first_cell_text(doc, group, row_in_group, accrual_keys, 2);
+    out->maturity_date = tdx_bonds_first_cell_text(doc, group, row_in_group, maturity_keys, 2);
+    out->next_coupon_date = tdx_bonds_cell_text(doc, group, row_in_group, "XGFXRQ");
+    out->last_coupon_date = tdx_bonds_cell_text(doc, group, row_in_group, "SGFXRQ");
+    out->listing_date = tdx_bonds_cell_text(doc, group, row_in_group, "SSRQ");
+    out->conversion_start_date = tdx_bonds_cell_text(doc, group, row_in_group, "ZGQSR");
+    out->conversion_end_date = tdx_bonds_cell_text(doc, group, row_in_group, "ZGJZR");
 
     out->has_remaining_years =
-        cell_number(doc, group, row_in_group, "SYNX", &out->remaining_years);
+        tdx_bonds_cell_number(doc, group, row_in_group, "SYNX", &out->remaining_years);
     out->has_current_coupon_rate_pct =
-        cell_number(doc, group, row_in_group, "DQLL", &out->current_coupon_rate_pct);
+        tdx_bonds_cell_number(doc, group, row_in_group, "DQLL", &out->current_coupon_rate_pct);
     out->has_coupon_frequency_months =
-        cell_number(doc, group, row_in_group, "FXPL1", &out->coupon_frequency_months);
+        tdx_bonds_cell_number(doc, group, row_in_group, "FXPL1", &out->coupon_frequency_months);
     out->has_face_value_yuan =
-        cell_number(doc, group, row_in_group, "MZ", &out->face_value_yuan);
+        tdx_bonds_cell_number(doc, group, row_in_group, "MZ", &out->face_value_yuan);
     out->has_issue_price_yuan =
-        cell_number(doc, group, row_in_group, "FXJG", &out->issue_price_yuan);
+        tdx_bonds_cell_number(doc, group, row_in_group, "FXJG", &out->issue_price_yuan);
     out->has_remaining_coupon_count =
-        cell_number(doc, group, row_in_group, "SYFXCS", &out->remaining_coupon_count);
+        tdx_bonds_cell_number(doc, group, row_in_group, "SYFXCS", &out->remaining_coupon_count);
     out->has_conversion_price_yuan =
-        cell_number(doc, group, row_in_group, "ZGJ", &out->conversion_price_yuan);
+        tdx_bonds_cell_number(doc, group, row_in_group, "ZGJ", &out->conversion_price_yuan);
     out->has_revision_trigger_pct =
-        cell_number(doc, group, row_in_group, "XXCFBL", &out->revision_trigger_pct);
+        tdx_bonds_cell_number(doc, group, row_in_group, "XXCFBL", &out->revision_trigger_pct);
     out->has_put_trigger_pct =
-        cell_number(doc, group, row_in_group, "HSCFBL", &out->put_trigger_pct);
+        tdx_bonds_cell_number(doc, group, row_in_group, "HSCFBL", &out->put_trigger_pct);
     out->has_call_trigger_pct =
-        cell_number(doc, group, row_in_group, "QSCFBL", &out->call_trigger_pct);
+        tdx_bonds_cell_number(doc, group, row_in_group, "QSCFBL", &out->call_trigger_pct);
 
     /* The size column, under this resource's own semantics. */
-    has_issue_size = cell_number(doc, group, row_in_group, "GM", &issue_size);
+    has_issue_size = tdx_bonds_cell_number(doc, group, row_in_group, "GM", &issue_size);
     out->has_source_scale = has_issue_size;
     out->source_scale_raw = has_issue_size ? issue_size : 0.0;
     switch (profile.scale) {
@@ -355,8 +365,8 @@ int tdx_bonds_normalize(const tdx_jsn_document *doc, const tdx_jsn_group *group,
     /* The underlying is named by the columns the profile did NOT use for identity,
      * so a master has none to report here. */
     if (!profile.reference_master) {
-        tdx_bond_text underlying_code = cell_text(doc, group, row_in_group, "$ZQDM1", NULL);
-        tdx_bond_text underlying_market_text = cell_text(doc, group, row_in_group, "$SC1", NULL);
+        tdx_bond_text underlying_code = tdx_bonds_cell_text(doc, group, row_in_group, "$ZQDM1");
+        tdx_bond_text underlying_market_text = tdx_bonds_cell_text(doc, group, row_in_group, "$SC1");
         if (underlying_code.present && underlying_market_text.present) {
             int underlying_market = -1;
             char prefix[16];
@@ -434,8 +444,8 @@ int tdx_bonds_coupon_schedule(const tdx_jsn_document *doc, const tdx_jsn_group *
                               size_t row_in_group, const char *dates_key, const char *rates_key,
                               tdx_bond_coupon *out, size_t capacity, size_t *out_count,
                               size_t *list_length, tdx_error *err) {
-    tdx_bond_text dates = cell_text(doc, group, row_in_group, dates_key, NULL);
-    tdx_bond_text rates = cell_text(doc, group, row_in_group, rates_key, NULL);
+    tdx_bond_text dates = tdx_bonds_cell_text(doc, group, row_in_group, dates_key);
+    tdx_bond_text rates = tdx_bonds_cell_text(doc, group, row_in_group, rates_key);
     size_t total;
     size_t stored = 0;
     size_t index;
