@@ -8,6 +8,10 @@
 
 /* Literal appends carry their own length, so a miscounted byte count cannot
  * silently truncate the object. */
+/* The argument must be a string literal.  This macro sizes it with sizeof, and a
+ * computed expression decays to a pointer, so `cond ? "true" : "false"` would
+ * copy sizeof(char*) - 1 bytes - which is how "true" once came out as
+ * "true\0fa".  Pass an expression to tdx_buf_append_printf instead. */
 #define APPEND_LITERAL(buf, err, text) tdx_buf_append((buf), (text), sizeof(text) - 1, (err))
 
 static const char *upper_prefix(int market_id) {

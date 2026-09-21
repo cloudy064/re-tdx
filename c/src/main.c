@@ -9,11 +9,14 @@
  *   trades      L1 trade details (minute resolution) for today or one date
  *   kline       multi-period K-lines (0x052D)
  *   timeline    today's intraday time-share series (0x0537)
+ *   auction     call-auction point series (0x056A)
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "tdx_auction.h"
+#include "tdx_auction_json.h"
 #include "tdx_directory.h"
 #include "tdx_format.h"
 #include "tdx_hub.h"
@@ -44,7 +47,8 @@ static void usage(void) {
     printf("  tdx-l1stream day --security CODE --date YYYYMMDD [options]\n");
     printf("  tdx-l1stream trades --security CODE [--date YYYYMMDD] [options]\n");
     printf("  tdx-l1stream kline --security CODE --period PERIOD [options]\n");
-    printf("  tdx-l1stream timeline --security CODE [options]\n\n");
+    printf("  tdx-l1stream timeline --security CODE [options]\n");
+    printf("  tdx-l1stream auction --security CODE [options]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -80,6 +84,11 @@ static void usage(void) {
     printf("timeline:\n");
     printf("  --date YYYYMMDD      historical series; 0x0FB4's request shape is still\n");
     printf("                       open, so only the today command works today\n\n");
+    printf("auction:\n");
+    printf("  --selector N         0 = opening auction only (default), non-zero = both\n");
+    printf("  --start N            first record\n");
+    printf("  --limit N            records to ask for, 1..%u, default 200\n\n",
+           (unsigned)TDX_AUCTION_LIMIT_MAX);
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -132,6 +141,7 @@ typedef struct cli_options {
     const char *period;
     int start;
     int index_mode; /* -1 stock, 0 auto, 1 index */
+    unsigned selector;
 } cli_options;
 
 static void options_init(cli_options *options) {
@@ -421,6 +431,13 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
                 return TDX_ERR;
             }
             options->start = parsed;
+        } else if (strcmp(argument, "--selector") == 0) {
+            int parsed = atoi(value);
+            if (parsed < 0 || parsed > 1000000) {
+                tdx_error_set(err, "--selector must be in 0..1000000");
+                return TDX_ERR;
+            }
+            options->selector = (unsigned)parsed;
         } else {
             tdx_error_set(err, "unknown option: %s", argument);
             return TDX_ERR;
@@ -1444,6 +1461,98 @@ done:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* auction                                                             */
+/* ------------------------------------------------------------------ */
+
+static int command_auction(const cli_options *options, tdx_error *err) {
+    tdx_auction_series series;
+    tdx_auction_summary summary;
+    tdx_buf line;
+    FILE *stream;
+    char endpoint[80];
+    char server_date[TDX_TRADES_DATE_LENGTH + 1];
+    const char *code;
+    int market_id;
+    unsigned limit;
+    int status = TDX_ERR;
+    size_t index;
+
+    if (options->security_count != 1) {
+        tdx_error_set(err, "auction needs exactly one --security");
+        return TDX_ERR;
+    }
+    market_id = options->securities[0].market_id;
+    code = options->securities[0].code;
+    /* --limit defaults to 0, which the command reads as "use the usual 200". */
+    limit = options->limit ? (unsigned)options->limit : 200u;
+    if (limit > TDX_AUCTION_LIMIT_MAX) {
+        tdx_error_set(err, "--limit must be in 1..%u for the auction",
+                      (unsigned)TDX_AUCTION_LIMIT_MAX);
+        return TDX_ERR;
+    }
+
+    tdx_buf_init(&line);
+    tdx_auction_series_init(&series);
+    memset(endpoint, 0, sizeof(endpoint));
+    server_date[0] = '\0';
+    if (tdx_auction_fetch_from_pool(&options->pool, options->timeout_ms, market_id, code,
+                                    options->selector, (uint32_t)options->start, limit, &series,
+                                    endpoint, sizeof(endpoint), server_date, err) != TDX_OK)
+        goto done;
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    for (index = 0; index < series.count; ++index) {
+        tdx_buf_clear(&line);
+        if (tdx_auction_format_point(&line, &series.points[index], market_id, code, server_date,
+                                     err) != TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto close_output;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the auction stream");
+            goto close_output;
+        }
+    }
+    tdx_auction_summarize(&series, &summary);
+    tdx_buf_clear(&line);
+    if (tdx_auction_format_summary(&line, &series, &summary, market_id, code, server_date,
+                                   endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the auction summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    if (status != TDX_OK)
+        goto done;
+    if (!options->quiet)
+        fprintf(stderr,
+                "auction %s %s: command=0x056A selector=%u points=%zu opening=%zu closing=%zu "
+                "flips=%zu/%zu endpoint=%s date=%s\n",
+                code, server_date[0] ? server_date : "today", options->selector,
+                summary.point_count, summary.opening.point_count, summary.closing.point_count,
+                summary.opening.unmatched_direction_flips,
+                summary.closing.unmatched_direction_flips, endpoint,
+                server_date[0] ? server_date : "-");
+
+done:
+    tdx_buf_free(&line);
+    tdx_auction_series_free(&series);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -1485,6 +1594,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "timeline") == 0) {
         if (command_timeline(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "auction") == 0) {
+        if (command_auction(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

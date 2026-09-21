@@ -39,6 +39,8 @@ c/
     tdx_kline_json.h      K 线的 JSONL 渲染
     tdx_timeline.h        0x0537 当日分时（逆向所得）
     tdx_timeline_json.h    分时的 JSONL 渲染
+    tdx_auction.h        0x056A 集合竞价序列
+    tdx_auction_json.h    竞价序列的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -49,12 +51,13 @@ c/
     tdx_hub.c  tdx_serve.c  tdx_md5.c  tdx_download.c  tdx_trades.c
     tdx_trades_json.c  tdx_kline.c  tdx_kline_json.c  tdx_timeline.c
     tdx_timeline_json.c  tdx_zst.c  tdx_zst_replay.c  tdx_zst_json.c
-    tdx_zst_day.c  main.c
+    tdx_auction.c  tdx_auction_json.c  tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
     test_pool.c   test_state.c  test_hub.c  test_zst.c  test_download.c
     test_trades.c  test_kline.c  kline_fixtures.h (generated)
     test_timeline.c  timeline_fixtures.h (generated)
+    test_auction.c   auction_fixtures.h (generated)
 ```
 
 ## 构建
@@ -73,7 +76,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-12/12 测试通过、0 warning。
+13/13 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -141,6 +144,11 @@ tdx-l1stream kline --security sh000001 --period day --index --page-size 3 --root
 # 当日分时：240 点，价格 + 累计均价 + 每分钟成交量（手）
 tdx-l1stream timeline --security sz000623 --root C:\new_tdx `
                      --output output\timeline-000623-today.jsonl
+
+# 集合竞价过程：selector 0 只开盘，非 0 开盘+收盘
+tdx-l1stream auction --security sz000623 --root C:\new_tdx
+tdx-l1stream auction --security sz000623 --selector 1 --root C:\new_tdx `
+                     --output output\auction-000623-both.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -465,6 +473,57 @@ C 是该分钟成交量（手），B 是累计均价。K 线的 1m bar 与 `.zsm
 `timeline --date` 会明确报「未复原」，而不是发一个猜测然后拿空序列当成功。
 要复盘历史某天，现在用 `kline --period 1m`（已验证与 `.zsm` 逐分钟吻合）。
 
+## 集合竞价序列：0x056A
+
+这是**别处都没有的数据**：快照和 K 线只给你竞价的结果，只有这条命令给竞价**过程**——
+每一笔虚拟撮合价、已撮合量和买卖未匹配的倾斜。
+
+```
+请求 28 字节
+  u8 市场, u8 0, 代码[6]
+  u32 0           常数
+  u32 selector    0 = 只开盘；非 0 = 开盘 + 收盘
+  u32 0           常数
+  u32 start
+  u32 limit       1..5000
+应答
+  u16 条数，随后每条 16 字节定长记录
+    [0..1]   u16 日内分钟数
+    [2..5]   f32 虚拟撮合价
+    [6..9]   u32 已撮合量（手）
+    [10..13] i32 未匹配量，**带符号**：正=买方剩，负=卖方剩
+    [14]     保留字节，4 份样本里恒为 0
+    [15]     u8 秒
+```
+
+应答长度必须**恰好** `2 + 条数 × 16`，否则整条拒绝——半读一条竞价序列比报错更糟。
+
+### 实测（sz000623，20260921）
+
+| | selector=0 | selector=1 |
+|---|---|---|
+| 点数 | 42（只开盘） | 61（开盘 42 + 收盘 19） |
+| 区间 | 09:15:00 – 09:24:57 | 收盘段 14:57:09 – 14:59:51 |
+
+- 开盘段虚拟价区间 `[17.50, 17.59]`，**含当日实际开盘 17.55**；收盘段末虚拟价 17.74，
+  当日收盘 17.75（差 1 分，撮合发生在 15:00:00）。
+- 两段都**止于撮合前 3 秒**：这条命令给的是"竞价过程中的虚拟价"，最终撮合价不在序列里。
+- 已撮合量会出现**下修**（本例开盘段 1 次），这是竞价中的正常现象。汇总里如实报
+  `matched_volume_monotonic_violations` 而不是抹平它。
+- 未匹配量的符号就是买卖倾斜，会翻转（开盘 3 次、收盘 4 次）；`max_unmatched_volume_hand`
+  与出现时刻一起给出。
+
+证据：`output/auction_probe_evidence.txt`（两份应答原文）、
+`output/auction_crosscheck_evidence.txt`。
+
+### 顺带修掉的一个宏陷阱
+
+`APPEND_LITERAL` 用 `sizeof` 取长度，我一度给它传了三元表达式
+`has_points ? "true" : "false"`——表达式退化成指针，于是拷了 `sizeof(char*) - 1` 字节，
+JSON 里出现 `true\0fa`（`fa` 是 `false` 的尾巴）。这种错误在按 `len` 逐字节扫的调试里
+看不出来，只有按 C 字符串读才会暴露。现在 5 个 JSON 模块的宏上方都写了"只传字面量"，
+并且 `braces_balanced` 这类检查会把它拦住。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -647,6 +706,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_trades` | 分钟/买卖方向/刻度/日历校验、两种请求的字节级断言、**活体应答原文**的五个 varint 记录解码、负数增量与累加、分钟越界与悬挂 varint 的拒绝、分页尾部未消费检测、汇总分桶、JSONL 括号平衡与 `null` |
 | `test_kline` | 周期别名表（含 `time`/`1m` 共用 id 7）、LC1 日期字解码、`880xxx` 板块指数判定、42 字节请求字段布局与补零、**三份活体应答原文**（日线/分钟/指数）的两种日期编码与 breadth 字段、指数字节当股票解析必须失败、时间排序、JSONL 括号平衡与 `null` |
 | `test_timeline` | 点位→时间标签映射（含午休跳段）、12 字节请求布局、**1173 字节活体应答**的 240 点解码、基点+偏移的读法（写成增量就会失败）、逐点成交量合计等于当日总量、截断/超帽/尾部未消费与负量的拒绝、JSONL 括号平衡与 `null` |
+| `test_auction` | 时间标签与买卖方向文案、28 字节请求的常数/选择器/起点/上限布局、**两份活体应答**（42 点只开盘 / 61 点开+收）的定长记录解码、带符号未匹配量与方向、两段划分与段内不变量（翻转次数、撮合量下修）、长度不符/非法秒/非法分钟/负价/NaN 的拒绝、JSONL 括号平衡与空段 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -662,10 +722,9 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
    （Windows 走的是控制台关闭事件 `0xC000013A`，不经过本处理器）。需要在前台
    控制台手按一次。
 3. 按订阅者集合进一步裁剪**批次数**（现在是按下标集合重排，批次边界可以更紧凑）。
-4. **指定日期分时 `0x0FB4` 与集合竞价序列 `0x056A`**：`0x0FB4` 的请求格式还没复原
-   （见上文，候选体都被静默回应）；`0x056A` 在 native 侧已实现（`src/market/auction.cpp`），
-   是下一块可移植的对象。`0x054C` 全量快照同理——`tdx_quote.h` 里只剩两个没人引用的
-   常量（`TDX_CMD_SNAPSHOT`、`TDX_SNAPSHOT_BATCH_MAX`），是半拉子脚手架，要么补实现
+4. **指定日期分时 `0x0FB4`**：请求格式还没复原（见上文，候选体都被静默回应）。
+   `0x054C` 全量快照也只差实现——`tdx_quote.h` 里只剩两个没人引用的常量
+   （`TDX_CMD_SNAPSHOT`、`TDX_SNAPSHOT_BATCH_MAX`），是半拉子脚手架，要么补上去
    要么删掉。
 5. **L2 秒级逐笔成交 / 逐笔委托**：交易所口径的那个，走内置 `1364`/`1374` 或
    SDK `4655`/`1801`/`1802`，需要授权业务事件。本仓库只做到结构确认与被动探针，
