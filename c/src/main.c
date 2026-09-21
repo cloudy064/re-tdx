@@ -801,23 +801,34 @@ done:
 typedef struct serve_fetch_context {
     const tdx_code *codes;
     size_t code_count;
+    tdx_code *batch; /* scratch, one entry per code */
     tdx_pool *pool;
     tdx_sweep_stats last;
 } serve_fetch_context;
 
 /* Bridges the hub's fetch hook onto one parallel sweep round. */
-static int serve_fetch(void *context, tdx_depth *out, size_t capacity, size_t *count,
-                       tdx_error *err) {
+static int serve_fetch(void *context, const size_t *indices, size_t count,
+                       tdx_depth *out, tdx_error *err) {
     serve_fetch_context *state = (serve_fetch_context *)context;
     tdx_sweep_stats stats;
+    size_t index;
+
+    if (count > state->code_count) {
+        tdx_error_set(err, "the hub asked for %zu of %zu securities", count,
+                      state->code_count);
+        return TDX_ERR;
+    }
+    /* The pool works on securities, the hub schedules by universe index. */
+    for (index = 0; index < count; ++index)
+        state->batch[index] = state->codes[indices[index]];
+
     memset(&stats, 0, sizeof(stats));
-    if (tdx_pool_run(state->pool, state->codes, state->code_count, out,
-                     capacity, &stats, err) != TDX_OK) {
+    if (tdx_pool_run(state->pool, state->batch, count, out, count, &stats, err) !=
+        TDX_OK) {
         state->last = stats;
         return TDX_ERR;
     }
     state->last = stats;
-    *count = stats.records;
     return TDX_OK;
 }
 
@@ -841,6 +852,11 @@ static int command_serve(const cli_options *options, tdx_error *err) {
     memset(&fetch, 0, sizeof(fetch));
     fetch.codes = codes;
     fetch.code_count = count;
+    fetch.batch = (tdx_code *)calloc(count, sizeof(*fetch.batch));
+    if (!fetch.batch) {
+        tdx_error_set(err, "out of memory for the poll scratch list");
+        goto done;
+    }
 
     if (tdx_pool_create(&pool, &options->pool, &sweep, err) != TDX_OK)
         goto done;
@@ -866,6 +882,7 @@ static int command_serve(const cli_options *options, tdx_error *err) {
     result = TDX_OK;
 
 done:
+    free(fetch.batch);
     if (pool)
         tdx_pool_destroy(pool);
     if (hub)

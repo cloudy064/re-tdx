@@ -46,10 +46,10 @@ static void make_depth(tdx_depth *depth, const tdx_code *code) {
     }
 }
 
-static int feed_fetch(void *context, tdx_depth *out, size_t capacity, size_t *count,
-                      tdx_error *err) {
+static int feed_fetch(void *context, const size_t *indices, size_t count,
+                      tdx_depth *out, tdx_error *err) {
     fake_feed *feed = (fake_feed *)context;
-    size_t index;
+    size_t position;
 
     if (!feed) {
         tdx_error_set(err, "feed is null");
@@ -60,17 +60,18 @@ static int feed_fetch(void *context, tdx_depth *out, size_t capacity, size_t *co
         tdx_error_set(err, "injected fetch failure");
         return TDX_ERR;
     }
-    if (capacity < feed->count) {
-        tdx_error_set(err, "capacity %zu is smaller than the feed", capacity);
-        return TDX_ERR;
+    for (position = 0; position < count; ++position) {
+        const size_t slot = indices[position];
+        if (slot >= feed->count) {
+            tdx_error_set(err, "feed index %zu is out of range", slot);
+            return TDX_ERR;
+        }
+        make_depth(&out[position], &feed->codes[slot]);
+        out[position].last = (double)feed->last_price[slot] / 100.0;
+        out[position].total_hand = feed->total_hand[slot];
+        out[position].current_hand =
+            feed->total_hand[slot] - feed->total_hand[slot] / 10;
     }
-    for (index = 0; index < feed->count; ++index) {
-        make_depth(&out[index], &feed->codes[index]);
-        out[index].last = (double)feed->last_price[index] / 100.0;
-        out[index].total_hand = feed->total_hand[index];
-        out[index].current_hand = feed->total_hand[index] - feed->total_hand[index] / 10;
-    }
-    *count = feed->count;
     feed->calls++;
     return TDX_OK;
 }
@@ -484,6 +485,8 @@ static void test_idle_backoff(void) {
     tdx_error error;
     uint64_t id;
     long effective = -1;
+    long warm = -1;
+    long cold = -1;
     size_t index;
 
     error.message[0] = '\0';
@@ -510,27 +513,31 @@ static void test_idle_backoff(void) {
           effective);
     (void)count_events(hub, id, 64);
 
-    /* Two quiet rounds reach the idle threshold. */
+    /* Two quiet rounds walk one step down the ladder. */
     CHECK(tdx_hub_poll_once(hub, &error) == TDX_OK, "second poll failed");
     CHECK(status_int(hub, "effective_interval_ms", &effective), "status read failed");
-    CHECK(effective == 1000, "one quiet round must not slow down yet (%ld)", effective);
+    CHECK(effective == 1000, "one quiet round must not demote yet (%ld)", effective);
 
     CHECK(tdx_hub_poll_once(hub, &error) == TDX_OK, "third poll failed");
     CHECK(status_int(hub, "effective_interval_ms", &effective), "status read failed");
-    CHECK(effective == 5000, "two quiet rounds must slow to the idle cadence (%ld)",
-          effective);
-    {
-        long quiet = -1;
-        CHECK(status_int(hub, "quiet_rounds", &quiet), "status has no quiet rounds");
-        CHECK(quiet == 2, "quiet rounds is %ld, expected 2", quiet);
-    }
+    CHECK(effective == 3000, "two quiet rounds must demote to warm (%ld)", effective);
+    CHECK(status_int(hub, "tier_warm", &warm) && warm == 4,
+          "expected four warm securities, got %ld", warm);
 
-    /* Any change snaps it straight back. */
+    /* Another two quiet rounds reach the cold step. */
+    CHECK(tdx_hub_poll_once(hub, &error) == TDX_OK, "fourth poll failed");
+    CHECK(tdx_hub_poll_once(hub, &error) == TDX_OK, "fifth poll failed");
+    CHECK(status_int(hub, "effective_interval_ms", &effective), "status read failed");
+    CHECK(effective == 5000, "four quiet rounds must reach cold (%ld)", effective);
+    CHECK(status_int(hub, "tier_cold", &cold) && cold == 4,
+          "expected four cold securities, got %ld", cold);
+
+    /* Any change snaps straight back to hot. */
     for (index = 0; index < feed.count; ++index)
         feed.last_price[index] += 7;
-    CHECK(tdx_hub_poll_once(hub, &error) == TDX_OK, "fourth poll failed");
+    CHECK(tdx_hub_poll_once(hub, &error) == TDX_OK, "sixth poll failed");
     CHECK(status_int(hub, "effective_interval_ms", &effective), "status read failed");
-    CHECK(effective == 1000, "a change must restore the active cadence (%ld)", effective);
+    CHECK(effective == 1000, "a change must restore the hot cadence (%ld)", effective);
     tdx_hub_destroy(hub);
 }
 

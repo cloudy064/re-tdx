@@ -24,10 +24,10 @@ extern "C" {
 /* Hard ceiling for one subscriber queue, so a replay can never allocate freely. */
 #define TDX_HUB_QUEUE_MAX 65536
 
-/* Produces one full round of records for the hub universe.  Production wires
- * this to a parallel sweep; tests inject a deterministic generator. */
-typedef int (*tdx_hub_fetch_fn)(void *context, tdx_depth *out, size_t capacity,
-                                size_t *count, tdx_error *err);
+/* Asks for exactly the universe indices the poller decided are wanted and due.
+ * out[i] must correspond to indices[i]. */
+typedef int (*tdx_hub_fetch_fn)(void *context, const size_t *indices,
+                                size_t count, tdx_depth *out, tdx_error *err);
 
 typedef struct tdx_hub_options {
     size_t max_subscribers;
@@ -37,7 +37,9 @@ typedef struct tdx_hub_options {
     /* After idle_rounds consecutive rounds with no change the poller drops
      * to idle_interval_ms; any change snaps it back to interval_ms.  0 in
      * idle_interval_ms disables the backoff. */
+    /* Cold tier cadence.  0 or <= interval_ms means "no cold step". */
     int idle_interval_ms;
+    /* Consecutive quiet polls before a security is demoted one tier. */
     int idle_rounds;
 } tdx_hub_options;
 

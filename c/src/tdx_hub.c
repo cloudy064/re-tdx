@@ -1,4 +1,17 @@
-/* tdx_hub.c - resident poller, shared diff table and per-subscriber queues. */
+/* tdx_hub.c - resident poller, shared diff table and per-subscriber queues.
+ *
+ * The poller never walks the universe blindly.  Each round it builds the list
+ * of securities that are both wanted (some subscriber asked for them, or nobody
+ * is subscribed at all) and due (their own tier interval has elapsed), asks the
+ * injected fetcher for exactly that list, and diffs the result against the
+ * shared last-known-value table.
+ *
+ * Two cadence controls fall out of the same option set (unchanged from the
+ * caller's point of view):
+ *   interval_ms       hot tier, i.e. the fastest cadence
+ *   idle_interval_ms  cold tier; 0 or <= interval_ms collapses the ladder
+ *   idle_rounds       consecutive quiet polls before a security is demoted
+ * The warm tier sits three hot intervals below cold, clamped into range. */
 #include "tdx_hub.h"
 
 #include <stdio.h>
@@ -26,11 +39,23 @@ struct tdx_hub {
     tdx_code *universe;
     size_t universe_size;
     tdx_hub_options options;
+    /* Derived tier ladder, all >= interval_ms. */
+    int tier_hot_ms;
+    int tier_warm_ms;
+    int tier_cold_ms;
+    int demote_rounds;
+
     tdx_hub_fetch_fn fetch;
     void *fetch_context;
 
     tdx_depth *records;
     tdx_state state;
+
+    /* Per security scheduling state. */
+    uint8_t *tiers;   /* 0 hot, 1 warm, 2 cold */
+    uint16_t *quiet;  /* consecutive polls with no change */
+    int64_t *polled;  /* last poll time, ms */
+    size_t *due;      /* scratch list for the current round */
 
     hub_subscriber *subscribers;
     size_t subscriber_slots;
@@ -45,8 +70,6 @@ struct tdx_hub {
     tdx_cond cond;
 
     uint64_t rounds;
-    uint64_t quiet_rounds;
-    size_t last_round_events;
     uint64_t failed_rounds;
     uint64_t total_records;
     uint64_t total_events;
@@ -61,9 +84,9 @@ void tdx_hub_options_default(tdx_hub_options *options) {
     options->max_subscribers = 16;
     options->subscriber_queue_limit = TDX_HUB_DEFAULT_QUEUE_LIMIT;
     options->interval_ms = TDX_HUB_DEFAULT_INTERVAL_MS;
-    options->heartbeat_ms = TDX_HUB_DEFAULT_HEARTBEAT_MS;
     options->idle_interval_ms = 0;
-    options->idle_rounds = 0;
+    options->idle_rounds = 30;
+    options->heartbeat_ms = TDX_HUB_DEFAULT_HEARTBEAT_MS;
 }
 
 /* ------------------------------------------------------------------ */
@@ -154,6 +177,29 @@ static int wants(const hub_subscriber *subscriber, size_t index) {
     return (subscriber->filter[index >> 3] & (uint8_t)(1u << (index & 7))) != 0;
 }
 
+/* Pruning: a security nobody subscribed to is not polled at all.  With no
+ * subscribers the whole universe stays warm so /snapshot keeps working. */
+static int any_subscriber_wants(const tdx_hub *hub, size_t index) {
+    size_t slot;
+    if (hub->active_subscribers == 0)
+        return 1;
+    for (slot = 0; slot < hub->subscriber_slots; ++slot)
+        if (hub->subscribers[slot].active && wants(&hub->subscribers[slot], index))
+            return 1;
+    return 0;
+}
+
+static int tier_interval_ms(const tdx_hub *hub, uint8_t tier) {
+    switch (tier) {
+    case 0:
+        return hub->tier_hot_ms;
+    case 1:
+        return hub->tier_warm_ms;
+    default:
+        return hub->tier_cold_ms;
+    }
+}
+
 /* Sleeps in short slices so shutdown stays responsive. */
 static void hub_sleep(tdx_hub *hub, int milliseconds) {
     int remaining = milliseconds;
@@ -171,39 +217,71 @@ static void hub_sleep(tdx_hub *hub, int milliseconds) {
 }
 
 /* ------------------------------------------------------------------ */
+/* scheduling                                                          */
+/* ------------------------------------------------------------------ */
+
+/* Fills hub->due with the wanted securities whose cadence has elapsed. */
+static size_t hub_build_due(tdx_hub *hub, int64_t now, int force_all) {
+    size_t count = 0;
+    size_t index;
+    for (index = 0; index < hub->universe_size; ++index) {
+        if (!any_subscriber_wants(hub, index))
+            continue;
+        if (!force_all &&
+            now - hub->polled[index] < tier_interval_ms(hub, hub->tiers[index]))
+            continue;
+        hub->due[count++] = index;
+    }
+    return count;
+}
+
+/* ------------------------------------------------------------------ */
 /* publish                                                             */
 /* ------------------------------------------------------------------ */
 
-static void hub_publish_locked(tdx_hub *hub, size_t count) {
+static void hub_publish_locked(tdx_hub *hub, const size_t *indices, size_t count) {
     tdx_buf scratch;
     tdx_error error;
-    size_t index;
-    int64_t now;
+    size_t position;
+    int64_t now = tdx_monotonic_ms();
 
     tdx_buf_init(&scratch);
     error.message[0] = '\0';
-    size_t published = 0;
-
     hub->rounds++;
     hub->total_records += count;
 
-    for (index = 0; index < count; ++index) {
+    for (position = 0; position < count; ++position) {
+        const size_t index = indices[position];
         tdx_diff_mask mask = 0;
         const tdx_state_entry *entry = NULL;
         size_t slot;
 
-        if (tdx_state_apply(&hub->state, &hub->records[index], &mask, &entry,
+        hub->polled[index] = now;
+        if (tdx_state_apply(&hub->state, &hub->records[position], &mask, &entry,
                             &error) != TDX_OK) {
             snprintf(hub->last_error, sizeof(hub->last_error), "%s", error.message);
             break;
         }
-        if (mask == 0)
+        if (mask == 0) {
+            /* Quiet: walk one step down the ladder when a step is due. */
+            if (hub->quiet[index] < 0xFFFFu)
+                hub->quiet[index]++;
+            if (hub->demote_rounds > 0 &&
+                hub->quiet[index] >= (uint16_t)hub->demote_rounds) {
+                if (hub->tiers[index] < 2)
+                    hub->tiers[index]++;
+                hub->quiet[index] = 0;
+            }
             continue;
+        }
+        /* Active: straight back to the hot tier. */
+        hub->tiers[index] = 0;
+        hub->quiet[index] = 0;
         hub->total_events++;
-        published++;
+
         tdx_buf_clear(&scratch);
         if (tdx_format_depth_event(&scratch, (mask & TDX_DIFF_NEW) ? "snapshot" : "change",
-                                   ++hub->next_sequence, &hub->records[index], mask,
+                                   ++hub->next_sequence, &hub->records[position], mask,
                                    entry ? entry->updates : 0, &error) != TDX_OK) {
             snprintf(hub->last_error, sizeof(hub->last_error), "%s", error.message);
             continue;
@@ -216,18 +294,9 @@ static void hub_publish_locked(tdx_hub *hub, size_t count) {
         }
     }
 
-    hub->last_round_events = published;
-    if (published == 0)
-        hub->quiet_rounds++;
-    else
-        hub->quiet_rounds = 0;
-
-    now = tdx_monotonic_ms();
-    for (index = 0; index < hub->subscriber_slots; ++index) {
-        hub_subscriber *subscriber = &hub->subscribers[index];
-        if (!subscriber->active)
-            continue;
-        if (hub->options.heartbeat_ms <= 0)
+    for (position = 0; position < hub->subscriber_slots; ++position) {
+        hub_subscriber *subscriber = &hub->subscribers[position];
+        if (!subscriber->active || hub->options.heartbeat_ms <= 0)
             continue;
         if (subscriber->last_event_ms == 0)
             subscriber->last_event_ms = now;
@@ -248,9 +317,8 @@ static void hub_publish_locked(tdx_hub *hub, size_t count) {
 /* poller                                                              */
 /* ------------------------------------------------------------------ */
 
-static int hub_run_round(tdx_hub *hub, int *stopped, tdx_error *err) {
-    size_t count = 0;
-    size_t index;
+static int hub_run_round(tdx_hub *hub, int force_all, int *stopped, tdx_error *err) {
+    size_t count;
     int64_t started = tdx_monotonic_ms();
     int result;
 
@@ -261,14 +329,13 @@ static int hub_run_round(tdx_hub *hub, int *stopped, tdx_error *err) {
         tdx_mutex_unlock(&hub->lock);
         return TDX_ERR;
     }
+    count = hub_build_due(hub, started, force_all);
     tdx_mutex_unlock(&hub->lock);
+    if (count == 0)
+        return TDX_OK; /* nothing due in this tick */
 
-    result = hub->fetch(hub->fetch_context, hub->records, hub->universe_size, &count,
-                        err);
+    result = hub->fetch(hub->fetch_context, hub->due, count, hub->records, err);
 
-    /* A short round must never be silently treated as "nothing changed": pad the
-     * remainder with the last known values so the diff stays meaningful, and
-     * record the failure. */
     tdx_mutex_lock(&hub->lock);
     hub->last_round_ms = tdx_monotonic_ms() - started;
     if (result != TDX_OK) {
@@ -277,28 +344,40 @@ static int hub_run_round(tdx_hub *hub, int *stopped, tdx_error *err) {
         tdx_mutex_unlock(&hub->lock);
         return TDX_ERR;
     }
-    if (count > hub->universe_size)
-        count = hub->universe_size;
-    for (index = count; index < hub->universe_size; ++index) {
-        const tdx_state_entry *stored = tdx_state_find(&hub->state, &hub->universe[index]);
-        if (stored)
-            hub->records[index] = stored->depth;
-    }
-    hub_publish_locked(hub, count);
+    hub_publish_locked(hub, hub->due, count);
     tdx_cond_broadcast(&hub->cond);
     tdx_mutex_unlock(&hub->lock);
     return TDX_OK;
 }
 
-/* Backs off to the idle cadence once enough consecutive rounds produced no
- * change.  Returns the delay to apply after the round that just finished. */
-static int hub_effective_interval_ms(const tdx_hub *hub) {
-    int interval = hub->options.interval_ms;
-    if (hub->options.idle_interval_ms > interval && hub->options.idle_rounds > 0 &&
-        hub->quiet_rounds >= (uint64_t)hub->options.idle_rounds)
-        interval = hub->options.idle_interval_ms;
-    interval -= (int)hub->last_round_ms;
-    return interval > 0 ? interval : 0;
+/* Sleeps until the earliest wanted security becomes due again, but never
+ * longer than one hot interval so a new subscriber is noticed promptly. */
+static void hub_sleep_until_due(tdx_hub *hub) {
+    const int64_t now = tdx_monotonic_ms();
+    int64_t earliest = -1;
+    int wait_ms;
+    size_t index;
+
+    tdx_mutex_lock(&hub->lock);
+    for (index = 0; index < hub->universe_size; ++index) {
+        int64_t due_at;
+        if (!any_subscriber_wants(hub, index))
+            continue;
+        due_at = hub->polled[index] + tier_interval_ms(hub, hub->tiers[index]);
+        if (earliest < 0 || due_at < earliest)
+            earliest = due_at;
+    }
+    tdx_mutex_unlock(&hub->lock);
+
+    if (earliest < 0) {
+        wait_ms = hub->tier_hot_ms;
+    } else {
+        int64_t delta = earliest - now;
+        if (delta > hub->tier_hot_ms)
+            delta = hub->tier_hot_ms;
+        wait_ms = delta > 0 ? (int)delta : 0;
+    }
+    hub_sleep(hub, wait_ms);
 }
 
 static void hub_poller_main(void *context) {
@@ -306,14 +385,12 @@ static void hub_poller_main(void *context) {
     for (;;) {
         tdx_error error;
         int stopped = 0;
-        int interval;
         error.message[0] = '\0';
-        if (hub_run_round(hub, &stopped, &error) != TDX_OK && stopped)
+        if (hub_run_round(hub, 0, &stopped, &error) != TDX_OK && stopped)
             break;
         if (stopped)
             break;
-        interval = hub_effective_interval_ms(hub);
-        hub_sleep(hub, interval > 0 ? interval : 0);
+        hub_sleep_until_due(hub);
         tdx_mutex_lock(&hub->lock);
         if (hub->stopping) {
             tdx_mutex_unlock(&hub->lock);
@@ -350,16 +427,16 @@ int tdx_hub_create(tdx_hub **out, const tdx_code *universe, size_t universe_size
         tdx_error_set(err, "hub queue limit must be positive");
         return TDX_ERR;
     }
+    if (options->interval_ms < 1 || options->interval_ms > 600000) {
+        tdx_error_set(err, "hub interval must be in 1..600000 ms");
+        return TDX_ERR;
+    }
     if (options->idle_interval_ms < 0 || options->idle_interval_ms > 600000) {
         tdx_error_set(err, "hub idle interval must be in 0..600000 ms");
         return TDX_ERR;
     }
     if (options->idle_rounds < 0 || options->idle_rounds > 1000000) {
         tdx_error_set(err, "hub idle rounds must be in 0..1000000");
-        return TDX_ERR;
-    }
-    if (options->interval_ms < 0 || options->interval_ms > 600000) {
-        tdx_error_set(err, "hub interval must be in 0..600000 ms");
         return TDX_ERR;
     }
 
@@ -369,17 +446,35 @@ int tdx_hub_create(tdx_hub **out, const tdx_code *universe, size_t universe_size
         return TDX_ERR;
     }
     hub->options = *options;
+    /* Derive the ladder.  cold collapses onto hot when unset, and warm is three
+     * hot intervals below cold, clamped into range. */
+    hub->tier_hot_ms = options->interval_ms;
+    hub->tier_cold_ms = options->idle_interval_ms > hub->tier_hot_ms
+                            ? options->idle_interval_ms
+                            : hub->tier_hot_ms;
+    hub->tier_warm_ms = hub->tier_hot_ms * 3;
+    if (hub->tier_warm_ms > hub->tier_cold_ms)
+        hub->tier_warm_ms = hub->tier_cold_ms;
+    if (hub->tier_warm_ms < hub->tier_hot_ms)
+        hub->tier_warm_ms = hub->tier_hot_ms;
+    hub->demote_rounds = options->idle_rounds;
+
     hub->fetch = fetch;
     hub->fetch_context = fetch_context;
     hub->universe_size = universe_size;
     hub->universe = (tdx_code *)calloc(universe_size, sizeof(*hub->universe));
     hub->records = (tdx_depth *)calloc(universe_size, sizeof(*hub->records));
+    hub->tiers = (uint8_t *)calloc(universe_size, sizeof(*hub->tiers));
+    hub->quiet = (uint16_t *)calloc(universe_size, sizeof(*hub->quiet));
+    hub->polled = (int64_t *)calloc(universe_size, sizeof(*hub->polled));
+    hub->due = (size_t *)calloc(universe_size, sizeof(*hub->due));
     hub->subscribers = (hub_subscriber *)calloc(options->max_subscribers,
                                                 sizeof(*hub->subscribers));
     hub->subscriber_slots = options->max_subscribers;
     hub->next_subscriber_id = 1;
 
-    if (!hub->universe || !hub->records || !hub->subscribers) {
+    if (!hub->universe || !hub->records || !hub->tiers || !hub->quiet ||
+        !hub->polled || !hub->due || !hub->subscribers) {
         tdx_error_set(err, "out of memory for the hub universe");
         tdx_hub_destroy(hub);
         return TDX_ERR;
@@ -425,6 +520,10 @@ void tdx_hub_destroy(tdx_hub *hub) {
         tdx_mutex_destroy(&hub->lock);
     if (hub->cond.native)
         tdx_cond_destroy(&hub->cond);
+    free(hub->due);
+    free(hub->polled);
+    free(hub->quiet);
+    free(hub->tiers);
     free(hub->records);
     free(hub->universe);
     free(hub);
@@ -453,7 +552,9 @@ int tdx_hub_poll_once(tdx_hub *hub, tdx_error *err) {
         tdx_error_set(err, "hub is already running its own poller");
         return TDX_ERR;
     }
-    return hub_run_round(hub, &stopped, err);
+    /* Forced: a synchronous caller wants a complete round now, not the subset
+     * the tier clock happens to consider due. */
+    return hub_run_round(hub, 1, &stopped, err);
 }
 
 /* ------------------------------------------------------------------ */
@@ -653,6 +754,11 @@ int tdx_hub_status_json(tdx_hub *hub, tdx_buf *out, tdx_error *err) {
     size_t index;
     size_t pending = 0;
     size_t dropped = 0;
+    size_t tier_hot = 0;
+    size_t tier_warm = 0;
+    size_t tier_cold = 0;
+    size_t polled_now = 0;
+    int effective = 0;
 
     if (!hub || !out) {
         tdx_error_set(err, "hub status needs a hub and an output buffer");
@@ -660,6 +766,28 @@ int tdx_hub_status_json(tdx_hub *hub, tdx_buf *out, tdx_error *err) {
     }
     tdx_buf_clear(out);
     tdx_mutex_lock(&hub->lock);
+    for (index = 0; index < hub->universe_size; ++index) {
+        int interval;
+        if (!any_subscriber_wants(hub, index))
+            continue;
+        polled_now++;
+        switch (hub->tiers[index]) {
+        case 0:
+            tier_hot++;
+            break;
+        case 1:
+            tier_warm++;
+            break;
+        default:
+            tier_cold++;
+            break;
+        }
+        interval = tier_interval_ms(hub, hub->tiers[index]);
+        if (effective == 0 || interval < effective)
+            effective = interval;
+    }
+    if (effective == 0)
+        effective = hub->tier_hot_ms;
     for (index = 0; index < hub->subscriber_slots; ++index) {
         if (!hub->subscribers[index].active)
             continue;
@@ -668,21 +796,24 @@ int tdx_hub_status_json(tdx_hub *hub, tdx_buf *out, tdx_error *err) {
     }
     if (tdx_buf_append_printf(out, err,
                               "{\"schema\":\"tdx-l1-hub-status-v1\","
-                              "\"universe\":%zu,\"rounds\":%llu,\"failed_rounds\":%llu,"
-                              "\"records\":%llu,\"events\":%llu,"
-                              "\"last_round_ms\":%lld,\"interval_ms\":%d,"
-                              "\"effective_interval_ms\":%d,\"quiet_rounds\":%llu,"
+                              "\"universe\":%zu,\"polled\":%zu,\"rounds\":%llu,"
+                              "\"failed_rounds\":%llu,\"records\":%llu,"
+                              "\"events\":%llu,\"last_round_ms\":%lld,"
+                              "\"interval_ms\":%d,\"effective_interval_ms\":%d,"
+                              "\"tier_warm_ms\":%d,\"tier_cold_ms\":%d,"
+                              "\"demote_rounds\":%d,\"tier_hot\":%zu,"
+                              "\"tier_warm\":%zu,\"tier_cold\":%zu,"
                               "\"heartbeat_ms\":%d,\"subscribers\":%zu,"
                               "\"subscriber_slots\":%zu,\"queued\":%zu,"
-                              "\"dropped\":%zu,\"sequence\":%lld,"
-                              "\"last_error\":",
-                              hub->universe_size, (unsigned long long)hub->rounds,
+                              "\"dropped\":%zu,\"sequence\":%lld,\"last_error\":",
+                              hub->universe_size, polled_now,
+                              (unsigned long long)hub->rounds,
                               (unsigned long long)hub->failed_rounds,
                               (unsigned long long)hub->total_records,
                               (unsigned long long)hub->total_events,
-                              (long long)hub->last_round_ms, hub->options.interval_ms,
-                              hub_effective_interval_ms(hub) + (int)hub->last_round_ms,
-                              (unsigned long long)hub->quiet_rounds,
+                              (long long)hub->last_round_ms, hub->tier_hot_ms,
+                              effective, hub->tier_warm_ms, hub->tier_cold_ms,
+                              hub->demote_rounds, tier_hot, tier_warm, tier_cold,
                               hub->options.heartbeat_ms, hub->active_subscribers,
                               hub->subscriber_slots, pending, dropped,
                               (long long)hub->next_sequence) != TDX_OK) {
