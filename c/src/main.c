@@ -25,6 +25,7 @@
 #include "tdx_directory.h"
 #include "tdx_finance.h"
 #include "tdx_finance_json.h"
+#include "tdx_gbbq.h"
 #include "tdx_snapshot.h"
 #include "tdx_snapshot_json.h"
 #include "tdx_format.h"
@@ -109,9 +110,13 @@ static void usage(void) {
     printf("  --batch-size N       securities per request, default 100, max %u\n\n",
            (unsigned)TDX_FINANCE_BATCH_MAX);
     printf("capital:\n");
-    printf("  --max-records N      per-security record cap, default %u; the reply header\n",
+    printf("  --local              read the local encrypted GBBQ file instead of asking\n");
+    printf("                       0x000F; the two sources describe the same events\n");
+    printf("  --gbbq PATH          the file to read; default <root>\\T0002\\hq_cache\\gbbq\n");
+    printf("  --max-records N      per-security record cap, default %u; the 0x000F reply\n",
            (unsigned)TDX_CAPITAL_RECORDS_MAX);
-    printf("                       names one security, so this command sends one at a time\n\n");
+    printf("                       header names one security, so the network source sends\n");
+    printf("                       one at a time\n\n");
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -165,6 +170,8 @@ typedef struct cli_options {
     int start;
     int index_mode; /* -1 stock, 0 auto, 1 index */
     unsigned selector;
+    int capital_local;   /* read the local encrypted GBBQ file instead of 0x000F */
+    const char *gbbq_path; /* NULL means <root>\T0002\hq_cache\gbbq */
 } cli_options;
 
 static void options_init(cli_options *options) {
@@ -289,6 +296,10 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
         }
         if (strcmp(argument, "--stock") == 0) {
             options->index_mode = -1;
+            continue;
+        }
+        if (strcmp(argument, "--local") == 0) {
+            options->capital_local = 1;
             continue;
         }
         if (index + 1 >= argc) {
@@ -461,6 +472,8 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
                 return TDX_ERR;
             }
             options->selector = (unsigned)parsed;
+        } else if (strcmp(argument, "--gbbq") == 0) {
+            options->gbbq_path = value;
         } else {
             tdx_error_set(err, "unknown option: %s", argument);
             return TDX_ERR;
@@ -1834,6 +1847,7 @@ static int command_capital(const cli_options *options, tdx_error *err) {
     char endpoint[80];
     size_t index;
     int status = TDX_ERR;
+    int connected = 0;
 
     if (build_universe(options, &codes, &code_count, err) != TDX_OK)
         return TDX_ERR;
@@ -1854,56 +1868,95 @@ static int command_capital(const cli_options *options, tdx_error *err) {
     memset(endpoint, 0, sizeof(endpoint));
     memset(&connection, 0, sizeof(connection));
     connection.socket_handle = (intptr_t)-1;
-    if (tdx_connection_open(&connection, &options->pool.items[0], options->timeout_ms, err) !=
-        TDX_OK)
-        goto close_output;
-    tdx_endpoint_address(&options->pool.items[0], endpoint, sizeof(endpoint));
 
-    for (index = 0; index < code_count; ++index) {
-        size_t got = 0;
-        size_t blocks = 0;
-        size_t record;
-        tdx_error step;
-        int done = 0;
-        int attempt;
-
-        /* This command is one request per security, so a long walk issues far more
-         * requests than the batched ones do and meets the same transient server
-         * timeout.  Transport failures are retried on a fresh connection; a decode
-         * error is not, because that is a bug and retrying would hide it. */
-        for (attempt = 0; attempt < TDX_FINANCE_ATTEMPTS && !done; ++attempt) {
-            step.message[0] = '\0';
-            if (attempt > 0) {
-                tdx_connection_close(&connection);
-                connection.socket_handle = (intptr_t)-1;
-                if (tdx_connection_open(&connection, &options->pool.items[0],
-                                        options->timeout_ms, &step) != TDX_OK) {
-                    *err = step;
-                    continue;
+    if (options->capital_local) {
+        /* The local file holds the whole market, so every security is answered from
+         * one read of one file rather than one request each. */
+        if (options->gbbq_path)
+            snprintf(endpoint, sizeof(endpoint), "local:%s", options->gbbq_path);
+        else if (tdx_gbbq_default_path(options->root, endpoint + 6, sizeof(endpoint) - 6,
+                                       err) != TDX_OK)
+            goto close_output;
+        if (options->gbbq_path == NULL)
+            memmove(endpoint, "local:", 6);
+        for (index = 0; index < code_count; ++index) {
+            size_t got = 0;
+            size_t source_count = 0;
+            size_t record;
+            if (tdx_gbbq_load(options->gbbq_path, options->root, &codes[index], records,
+                              TDX_CAPITAL_RECORDS_MAX, &got, &source_count, err) != TDX_OK)
+                goto close_output;
+            for (record = 0; record < got; ++record) {
+                tdx_buf_clear(&line);
+                if (tdx_capital_format(&line, &records[record], err) != TDX_OK)
+                    goto close_output;
+                if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+                    goto close_output;
+                if (fwrite(line.data, 1, line.len, stream) != line.len) {
+                    tdx_error_set(err, "cannot write the capital stream");
+                    goto close_output;
                 }
             }
-            if (tdx_capital_fetch(&connection, &codes[index], records,
-                                  TDX_CAPITAL_RECORDS_MAX, &got, &blocks, &step) == TDX_OK) {
-                done = 1;
-                continue;
-            }
-            *err = step;
+            tdx_capital_tally_add(&tally, records, got);
         }
-        if (!done)
+        status = TDX_OK;
+    } else {
+        if (tdx_connection_open(&connection, &options->pool.items[0], options->timeout_ms,
+                                err) != TDX_OK)
             goto close_output;
-        for (record = 0; record < got; ++record) {
-            tdx_buf_clear(&line);
-            if (tdx_capital_format(&line, &records[record], err) != TDX_OK)
-                goto close_output;
-            if (tdx_buf_push(&line, '\n', err) != TDX_OK)
-                goto close_output;
-            if (fwrite(line.data, 1, line.len, stream) != line.len) {
-                tdx_error_set(err, "cannot write the capital stream");
-                goto close_output;
+        connected = 1;
+        tdx_endpoint_address(&options->pool.items[0], endpoint, sizeof(endpoint));
+
+        for (index = 0; index < code_count; ++index) {
+            size_t got = 0;
+            size_t blocks = 0;
+            size_t record;
+            tdx_error step;
+            int done = 0;
+            int attempt;
+
+            /* One request per security means a long walk issues far more requests
+             * than the batched commands, and it meets the same transient server
+             * timeout.  Transport failures retry on a fresh connection; a decode
+             * error does not, because that is a bug and retrying would hide it. */
+            for (attempt = 0; attempt < TDX_FINANCE_ATTEMPTS && !done; ++attempt) {
+                step.message[0] = '\0';
+                if (attempt > 0) {
+                    tdx_connection_close(&connection);
+                    connected = 0;
+                    connection.socket_handle = (intptr_t)-1;
+                    if (tdx_connection_open(&connection, &options->pool.items[0],
+                                            options->timeout_ms, &step) != TDX_OK) {
+                        *err = step;
+                        continue;
+                    }
+                    connected = 1;
+                }
+                if (tdx_capital_fetch(&connection, &codes[index], records,
+                                      TDX_CAPITAL_RECORDS_MAX, &got, &blocks, &step) == TDX_OK) {
+                    done = 1;
+                    continue;
+                }
+                *err = step;
             }
+            if (!done)
+                goto close_output;
+            for (record = 0; record < got; ++record) {
+                tdx_buf_clear(&line);
+                if (tdx_capital_format(&line, &records[record], err) != TDX_OK)
+                    goto close_output;
+                if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+                    goto close_output;
+                if (fwrite(line.data, 1, line.len, stream) != line.len) {
+                    tdx_error_set(err, "cannot write the capital stream");
+                    goto close_output;
+                }
+            }
+            tdx_capital_tally_add(&tally, records, got);
         }
-        tdx_capital_tally_add(&tally, records, got);
+        status = TDX_OK;
     }
+
     tdx_buf_clear(&line);
     if (tdx_capital_format_summary(&line, &tally, code_count, endpoint, err) != TDX_OK)
         goto close_output;
@@ -1913,10 +1966,10 @@ static int command_capital(const cli_options *options, tdx_error *err) {
         tdx_error_set(err, "cannot write the capital summary");
         goto close_output;
     }
-    status = TDX_OK;
 
 close_output:
-    tdx_connection_close(&connection);
+    if (connected)
+        tdx_connection_close(&connection);
     if (options->output)
         fclose(stream);
     free(codes);
@@ -1924,7 +1977,7 @@ close_output:
     if (status != TDX_OK)
         return status;
     if (!options->quiet)
-        fprintf(stderr, "capital: %zu securities, %zu records, endpoint=%s\n", tally.securities,
+        fprintf(stderr, "capital: %zu securities, %zu records, source=%s\n", tally.securities,
                 tally.record_count, endpoint);
     return status;
 }

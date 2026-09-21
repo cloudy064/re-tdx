@@ -47,6 +47,7 @@ c/
     tdx_finance_json.h    财务记录的 JSONL 渲染与累加器
     tdx_capital.h         0x000F 股本变迁与除权
     tdx_capital_json.h    股本事件的 JSONL 渲染与累加器
+    tdx_gbbq.h            本地加密 GBBQ 权息文件
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -59,6 +60,7 @@ c/
     tdx_timeline_json.c  tdx_zst.c  tdx_zst_replay.c  tdx_zst_json.c
     tdx_auction.c  tdx_auction_json.c  tdx_snapshot.c  tdx_snapshot_json.c
     tdx_finance.c  tdx_finance_json.c  tdx_capital.c  tdx_capital_json.c
+    tdx_gbbq.c  gbbq_cipher_state.h (generated)
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -69,6 +71,7 @@ c/
     test_snapshot.c  snapshot_fixtures.h (generated)
     test_finance.c   finance_fixtures.h (generated)
     test_capital.c   capital_fixtures.h (generated)
+    test_gbbq.c      gbbq_fixtures.h (generated, real ciphertext)
 ```
 
 ## 构建
@@ -87,7 +90,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-16/16 测试通过、0 warning。
+17/17 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -172,6 +175,10 @@ tdx-l1stream finance --market sz,sh,bj --category a_share --root C:\new_tdx `
 # 股本变迁与除权（0x000F，一只一请求；不带 --security 就是整个 universe）
 tdx-l1stream capital --security sz000001 --root C:\new_tdx `
                      --output output\capital-000001.jsonl
+
+# 同一批事件的离线来源（本地加密文件），两者的输出可以逐行 diff
+tdx-l1stream capital --local --security sz000001 --root C:\new_tdx `
+                     --output output\capital-local-000001.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -731,6 +738,61 @@ float32**，wire 读法是同一个数的第二种解码路径，而不是另一
 
 证据：`output/capital_verification_evidence.txt`。
 
+## 本地加密 GBBQ 权息文件
+
+`0x000F` 的离线替代：TdxW 把全市场公司行为历史放在本地
+`<root>\T0002\hq_cache\gbbq`，内容是同一批事件。**这是本项目里唯一能拿两个完全独立
+的数据源互相 diff 的地方**，所以值得为它做那个密码。
+
+```
+4 字节头： u32 条数
+条数 × 29 字节：前 24 字节加密，后 5 字节明文
+           记录布局与 0x000F 完全一致
+```
+
+实测该文件 5,607,734 字节，`(5607734 - 4) / 29 = 193370` 整除。解析器要求
+`size == 4 + 条数 × 29` 精确成立（否则拒绝），因为"尽力读"在这里只会读出垃圾。
+
+### 密码：16 轮 Feistel + 4168 字节状态表
+
+参考实现把状态表以 base64 内嵌；本移植用 `output/make_gbbq_cipher_state.py` **机械提取**，
+没有手抄一个字符（5560 字符里错一个，整份数据的解码都会错而没有别的症状）。四张 256 字表
+恰好平铺 `[0x48, 0x1048)`：
+
+```
+0x48 + 256*4 = 0x448   0x448 + 256*4 = 0x848
+0x848 + 256*4 = 0xC48  0xC48 + 256*4 = 0x1048 = 表长
+```
+
+这个平铺关系本身就是"表偏移写对了"的判据，测试里逐条断言。
+
+### 决定性验证：本地文件 vs 网络 0x000F
+
+两条路径没有任何共享代码——一个是服务端应答，一个是 5.6 MB 本地加密缓存。对同一只票
+逐条比对（键为日期+类别，值为四个 float 与四个 share）：
+
+| 证券 | 文件内条数 | 网络条数 | 精确一致 | 值不同 | 仅网络 | 仅本地 |
+|---|---:|---:|---:|---:|---:|---:|
+| sz000001 | 81 | 81 | **81** | 0 | 0 | 0 |
+| sh600000 | 88 | 88 | **88** | 0 | 0 | 0 |
+| sz000002 | 112 | 112 | **112** | 0 | 0 | 0 |
+
+**281 条记录，零差异。** 更强的一步：把两个来源都渲染成 JSONL 再逐行比对，
+sz000001 的 **81 行逐字节完全相同**（只差汇总里的 source 字段）。这同时证明了 base64 提取、
+base64 解码、Feistel 解密、记录布局四件事。
+
+`0x000F` 与本地文件共用同一个记录解析器，所以两种来源的输出可以直接 diff——上面做的就是这件事。
+
+### 一个必须说清的限制
+
+**这个容器没有认证码**（没有 MAC、没有摘要，只有长度校验和逐条形状校验）。所以
+"改一个密文字节一定被拒绝"是**不成立**的：改动可能解出另一个仍然合法的记录。测试因此断言的是
+**损坏永不隐形**——24 个加密字节逐个翻转，要么解析被拒绝，要么解出的值必然与原件不同。
+这也说明该文件必须来自可信本地来源（它本来就是 TdxW 自己的缓存），不能当作有完整性保护的
+传输通道使用。
+
+证据：`output/gbbq_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -917,6 +979,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_snapshot` | 基金净值判定（深 158/159、沪 17 个前缀 + 末位 0、北交所恒否）、10+7N 请求布局、**309 字节活体应答**的 3 条记录解码与另一条命令的字段对账（含 `open_amount` 刻度差异与未建模尾部）、记录边界扫描（数量不符/首条不偏移 0/零条）、市场号与代码非法、截断记录、累加器与 JSONL 括号平衡 |
 | `test_finance` | 10+7N 请求布局、**860 字节活体应答**的 6 条 143 字节记录解码、6 个真实上市日期、茅台总股本与工行 H 股钉死 ×10000 刻度、字段包络（总资产≥净资产、流通≤总股本）、长度不符/市场号非法/非数字代码/非日期/NaN 的拒绝、累加器与 JSONL 括号平衡与 `null` |
 | `test_capital` | 类别 key 表、9 字节请求布局、**2360 字节活体应答**的 81 条 29 字节记录解码、平安银行 2024 年 10 派 7.19 精确复现、26/26 连续股本链、324/324 双读法一致、回显证券不匹配/长度不符/类别越界/非日期/NaN 的拒绝、累加器与 JSONL 括号平衡 |
+| `test_gbbq` | 状态表 base64 解码与长度、四张表平铺 0x48/0x448/0x848/0xC48/0x1048、**真实密文**的 5 条记录解密、明文尾部原样透传、1991 年股本链跨记录衔接、2024 年 10 派 7.19 与网络源一致、长度不符/条数超限/缺证券/短输出的拒绝、24 个加密字节逐字节翻转的"损坏永不隐形"统计 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -925,7 +988,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **本地加密 GBBQ（权息）文件**：参考实现有一条不走网络、直接读本地加密文件的路径，与 `0x000F` 互为补充。
+6. **`0x0452` 特别处理名单**：请求体与 13 字节记录已在参考实现里读到（`limits_request`），是下一块。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi
