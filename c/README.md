@@ -45,6 +45,8 @@ c/
     tdx_finance.h         0x0010 批量财务基础信息
     tdx_snapshot_json.h   全量快照的 JSONL 渲染与累加器
     tdx_finance_json.h    财务记录的 JSONL 渲染与累加器
+    tdx_capital.h         0x000F 股本变迁与除权
+    tdx_capital_json.h    股本事件的 JSONL 渲染与累加器
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -56,7 +58,7 @@ c/
     tdx_trades_json.c  tdx_kline.c  tdx_kline_json.c  tdx_timeline.c
     tdx_timeline_json.c  tdx_zst.c  tdx_zst_replay.c  tdx_zst_json.c
     tdx_auction.c  tdx_auction_json.c  tdx_snapshot.c  tdx_snapshot_json.c
-    tdx_finance.c  tdx_finance_json.c
+    tdx_finance.c  tdx_finance_json.c  tdx_capital.c  tdx_capital_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -66,6 +68,7 @@ c/
     test_auction.c   auction_fixtures.h (generated)
     test_snapshot.c  snapshot_fixtures.h (generated)
     test_finance.c   finance_fixtures.h (generated)
+    test_capital.c   capital_fixtures.h (generated)
 ```
 
 ## 构建
@@ -84,7 +87,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-15/15 测试通过、0 warning。
+16/16 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -165,6 +168,10 @@ tdx-l1stream snapshot --market sz,sh,bj --category a_share --root C:\new_tdx `
 # 全市场财务（0x0010，一次请求带一串证券，记录定长）
 tdx-l1stream finance --market sz,sh,bj --category a_share --root C:\new_tdx `
                      --output output\finance-ashare.jsonl
+
+# 股本变迁与除权（0x000F，一只一请求；不带 --security 就是整个 universe）
+tdx-l1stream capital --security sz000001 --root C:\new_tdx `
+                     --output output\capital-000001.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -662,6 +669,68 @@ JSON 里出现 `true\0fa`（`fa` 是 `false` 的尾巴）。这种错误在按 `
 命令因此对**传输失败**做每批最多 3 次重试（新连接），解码失败不重试——那是 bug，重试只会掩盖
 错误信息。加重试后全市场 5574/5574、4.1 秒跑完。
 
+## 公开基础数据：0x000F 股本变迁与除权
+
+和 `0x0010` 共用同一个请求形状，但**应答头只点名一只证券**，所以这条命令是"一只一请求"：
+
+```
+请求 9 字节： u16 条数(=1) + u8 市场 + 代码[6]
+应答 11 字节头： u16 块数, u8 市场, 代码[6], u16 条数
+      随后 count × 29 字节
+        [0]      u8 市场
+        [1..6]   代码[6]
+        [7]      u8 保留
+        [8..11]  u32 日期 YYYYMMDD
+        [12]     u8 类别
+        [13..28] 四个 u32
+```
+
+因为头里只有一只证券，多只就没法归属，所以模块只收一只，并**校验回显的市场/代码与请求一致**——
+回错票的应答无法归因，宁可报错。长度严格判 `11 + 条数 × 29`。
+
+### 类别与口径
+
+| 类别 | 含义 | 四个槽怎么读 |
+|---|---|---|
+| 1 | 除权除息 | 每 10 股派息 / 配股价 / 每 10 股送转 / 每 10 股配股 |
+| 2 | 送配股上市 | |
+| 3 | 非流通股上市 | |
+| 4 | 国家股配售 | |
+| 5 | 股本变化 | 非事件类，槽是**变更前流通 / 变更前总 / 变更后流通 / 变更后总**（×10000 为股） |
+| 6 | 增发新股 | |
+| 7 | 股份回购 | |
+| 8 | 增发新股上市 | |
+| 9 | 转配股上市 | |
+| 10 | 可转债上市 | |
+| 11 | 扩缩股 | float[2] = 缩股比例 |
+| 12 | 非流通股缩股 | float[2] = 缩股比例 |
+| 13 | 送认购权证 | float[0] = 行权价，float[2] = 权证份数 |
+| 14 | 送认沽权证 | float[0] = 行权价，float[2] = 权证份数 |
+| 15 | 重整调整 | 四个 float，无命名 |
+
+**类别 1 是"每 10 股"**，不是每股——把首字段当每股用会把现金红利放大十倍，所以 JSON 里
+同时给出 `dividend_per_10_shares_yuan` 和派生出的 `dividend_per_share_yuan`。C 侧对外只给
+ASCII key（如 `ex_rights_dividend`）+ 数字类别，中文名留在本表里，避免把中文写进编译单元。
+
+### 验证到什么程度
+
+| 检验 | 结果 |
+|---|---|
+| 平安银行 2024-06-14 那条 = **10 派 7.19** | **精确复现**（参考实现记录的活体事实） |
+| 应答长度 = 11 + 81 × 29 | **逐字节吻合** |
+| 股本链：第 N 条 `after` == 第 N+1 条 `before` | **26/26 对全部精确相符**（1991 年上市 2650 万股 → 2007 年 22.93 亿股） |
+| float32 视图 vs wire 视图 | **324/324 槽全部吻合（<0.01%）** |
+| 200 只 A 股遍历 | 11,213 条 / 4.6 秒，**15 个类别里出现 13 个** |
+
+第三条钉住了槽的次序与 ×10000 刻度，第一条钉住了类别 1 的口径。
+
+**一个澄清**：参考实现对每个槽同时按 float32 和按 wire 数解码，看起来像"一个槽装两种量"。
+实测 324/324 槽两种读法给出同一个数（浮点 7.19 对 wire 71900/10000），所以**槽就是一个
+float32**，wire 读法是同一个数的第二种解码路径，而不是另一个字段。本移植仍同时保留两种视图
+（忠于参考实现），但 JSON 里两者并列，让调用方自己看到它们一致。
+
+证据：`output/capital_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -847,6 +916,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_auction` | 时间标签与买卖方向文案、28 字节请求的常数/选择器/起点/上限布局、**两份活体应答**（42 点只开盘 / 61 点开+收）的定长记录解码、带符号未匹配量与方向、两段划分与段内不变量（翻转次数、撮合量下修）、长度不符/非法秒/非法分钟/负价/NaN 的拒绝、JSONL 括号平衡与空段 |
 | `test_snapshot` | 基金净值判定（深 158/159、沪 17 个前缀 + 末位 0、北交所恒否）、10+7N 请求布局、**309 字节活体应答**的 3 条记录解码与另一条命令的字段对账（含 `open_amount` 刻度差异与未建模尾部）、记录边界扫描（数量不符/首条不偏移 0/零条）、市场号与代码非法、截断记录、累加器与 JSONL 括号平衡 |
 | `test_finance` | 10+7N 请求布局、**860 字节活体应答**的 6 条 143 字节记录解码、6 个真实上市日期、茅台总股本与工行 H 股钉死 ×10000 刻度、字段包络（总资产≥净资产、流通≤总股本）、长度不符/市场号非法/非数字代码/非日期/NaN 的拒绝、累加器与 JSONL 括号平衡与 `null` |
+| `test_capital` | 类别 key 表、9 字节请求布局、**2360 字节活体应答**的 81 条 29 字节记录解码、平安银行 2024 年 10 派 7.19 精确复现、26/26 连续股本链、324/324 双读法一致、回显证券不匹配/长度不符/类别越界/非日期/NaN 的拒绝、累加器与 JSONL 括号平衡 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -855,7 +925,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **`0x000F` 股本变迁与除权**：同样是定长记录（29 字节/条，11 字节头），与 `0x0010` 共用同一个请求形状，是这份财务工作的直接下一步。
+6. **本地加密 GBBQ（权息）文件**：参考实现有一条不走网络、直接读本地加密文件的路径，与 `0x000F` 互为补充。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi
