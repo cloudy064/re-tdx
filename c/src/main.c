@@ -13,6 +13,7 @@
  *   snapshot    batched whole-universe L1 snapshot (0x054C)
  *   finance     batched fundamental data (0x0010)
  *   capital     share-capital changes and ex-rights events (0x000F)
+ *   limits      the special price-limit list (0x0452)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +27,8 @@
 #include "tdx_finance.h"
 #include "tdx_finance_json.h"
 #include "tdx_gbbq.h"
+#include "tdx_limits.h"
+#include "tdx_limits_json.h"
 #include "tdx_snapshot.h"
 #include "tdx_snapshot_json.h"
 #include "tdx_format.h"
@@ -61,7 +64,8 @@ static void usage(void) {
     printf("  tdx-l1stream auction --security CODE [options]\n");
     printf("  tdx-l1stream snapshot --security CODE [--security CODE ...] [options]\n");
     printf("  tdx-l1stream finance --security CODE [--security CODE ...] [options]\n");
-    printf("  tdx-l1stream capital --security CODE [--security CODE ...] [options]\n\n");
+    printf("  tdx-l1stream capital --security CODE [--security CODE ...] [options]\n");
+    printf("  tdx-l1stream limits [--start N] [options]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -117,6 +121,10 @@ static void usage(void) {
            (unsigned)TDX_CAPITAL_RECORDS_MAX);
     printf("                       header names one security, so the network source sends\n");
     printf("                       one at a time\n\n");
+    printf("limits:\n");
+    printf("  --start N            row to resume from, default 0\n");
+    printf("  --max-records N      cap how many rows the walk takes, default %u\n\n",
+           (unsigned)TDX_LIMITS_MAX_RECORDS);
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -1982,6 +1990,81 @@ close_output:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* limits                                                              */
+/* ------------------------------------------------------------------ */
+
+/* Walks the special price-limit table.  The server answers one row per request,
+ * so this is by far the chatty-est command here - the walk is one request per row
+ * and the only thing that ends it is an empty page. */
+static int command_limits(const cli_options *options, tdx_error *err) {
+    static tdx_limit_record rows[TDX_LIMITS_MAX_RECORDS];
+    tdx_connection connection;
+    tdx_buf line;
+    FILE *stream;
+    char endpoint[80];
+    size_t count = 0;
+    unsigned next_index = 0;
+    size_t index;
+    unsigned start = options->start > 0 ? (unsigned)options->start : 0;
+    int status = TDX_ERR;
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        return TDX_ERR;
+    }
+    tdx_buf_init(&line);
+    memset(endpoint, 0, sizeof(endpoint));
+    memset(&connection, 0, sizeof(connection));
+    connection.socket_handle = (intptr_t)-1;
+    if (tdx_connection_open(&connection, &options->pool.items[0], options->timeout_ms, err) !=
+        TDX_OK)
+        goto close_output;
+    tdx_endpoint_address(&options->pool.items[0], endpoint, sizeof(endpoint));
+    if (tdx_limits_fetch_all(&connection, start,
+                             options->max_records > 0 ? (size_t)options->max_records
+                                                      : (size_t)TDX_LIMITS_MAX_RECORDS,
+                             TDX_LIMITS_MAX_PAGES, rows, TDX_LIMITS_MAX_RECORDS, &count,
+                             &next_index, err) != TDX_OK)
+        goto close_output;
+
+    for (index = 0; index < count; ++index) {
+        tdx_buf_clear(&line);
+        if (tdx_limits_format(&line, &rows[index], start + (unsigned)index, err) != TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto close_output;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the limit stream");
+            goto close_output;
+        }
+    }
+    tdx_buf_clear(&line);
+    if (tdx_limits_format_summary(&line, rows, count, start, next_index, endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the limit summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    tdx_connection_close(&connection);
+    if (options->output)
+        fclose(stream);
+    tdx_buf_free(&line);
+    if (status != TDX_OK)
+        return status;
+    if (!options->quiet)
+        fprintf(stderr, "limits: %zu rows from index %u, next=%u, endpoint=%s\n", count, start,
+                next_index, endpoint);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -2051,6 +2134,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "capital") == 0) {
         if (command_capital(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "limits") == 0) {
+        if (command_limits(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

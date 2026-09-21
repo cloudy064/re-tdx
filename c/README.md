@@ -48,6 +48,8 @@ c/
     tdx_capital.h         0x000F 股本变迁与除权
     tdx_capital_json.h    股本事件的 JSONL 渲染与累加器
     tdx_gbbq.h            本地加密 GBBQ 权息文件
+    tdx_limits.h          0x0452 特殊涨跌停表
+    tdx_limits_json.h     涨跌停记录的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -61,6 +63,7 @@ c/
     tdx_auction.c  tdx_auction_json.c  tdx_snapshot.c  tdx_snapshot_json.c
     tdx_finance.c  tdx_finance_json.c  tdx_capital.c  tdx_capital_json.c
     tdx_gbbq.c  gbbq_cipher_state.h (generated)
+    tdx_limits.c  tdx_limits_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -72,6 +75,7 @@ c/
     test_finance.c   finance_fixtures.h (generated)
     test_capital.c   capital_fixtures.h (generated)
     test_gbbq.c      gbbq_fixtures.h (generated, real ciphertext)
+    test_limits.c    limits_fixtures.h (generated)
 ```
 
 ## 构建
@@ -90,7 +94,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-17/17 测试通过、0 warning。
+18/18 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -179,6 +183,9 @@ tdx-l1stream capital --security sz000001 --root C:\new_tdx `
 # 同一批事件的离线来源（本地加密文件），两者的输出可以逐行 diff
 tdx-l1stream capital --local --security sz000001 --root C:\new_tdx `
                      --output output\capital-local-000001.jsonl
+
+# 特殊涨跌停表（0x0452，每行一次请求，全表约 780 行）
+tdx-l1stream limits --root C:\new_tdx --output output\limits.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -793,6 +800,55 @@ base64 解码、Feistel 解密、记录布局四件事。
 
 证据：`output/gbbq_verification_evidence.txt`。
 
+## 特殊涨跌停表：0x0452
+
+```
+请求 14 字节： u16 起始下标 + 12 个零
+应答 2 字节头： u16 条数
+      条数 × 13 字节：
+        [0]     市场
+        [1..4]  代码【数字】，显示时补零到 6 位
+        [5..8]  f32 涨停价
+        [9..12] f32 跌停价
+```
+
+**这个命令每次只回一行。** 从下标 0 请求，服务端只回 1 条（实测 15 字节 = 2 + 1×13）
+——`start_index` 是"表的第几行"，不是"从这里开始最多给 N 行"，客户端必须按下标逐行推进，
+**只有空页才是结束**。我最初把"不足一页"当成结束，结果走完第一行就停了；实测纠正后才走完整表。
+
+`limits` 是本项目最"话多"的命令：782 行 = 782 次往返。
+
+### 它是什么（这里我改过一次判断）
+
+第一版判断是"特别处理 = ST = ±5%"。走完整表后，band（由 `(涨停-跌停)/(涨停+跌停)` 得出，
+对称时即为 band 本身）的分布是：
+
+| band | 行数 | 说明 |
+|---:|---:|---|
+| 0% | 1 | 涨停 == 跌停 |
+| 5% | 1 | **ST 股确实在名单里**，只是全表只有一条 |
+| 10% | 144 | 主板上需要显式给出的情形 |
+| 10.5% | 4 | 两位数取整的边界 |
+| **20%** | **626** | 创业板 / 科创板 |
+| 20.5% | 1 | 同上，取整边界 |
+| 100% | 5 | 新股首日等无涨跌幅限制 |
+
+所以这张表是**各类非标准 band 的覆盖层**（参考实现注册表原话：
+「特殊涨跌停表……作为普通交易规则的覆盖层」）。本条验证的是"字段就是涨跌停价"；
+**没有**验证"某只票为什么在名单里"——字段本身看不出原因，不猜。
+
+### 验证
+
+| 检验 | 结果 |
+|---|---|
+| `(涨停 + 跌停) / 2 == 昨收`（0x054C 独立给出昨收） | 13 条连续记录：**11 条完全相等**，2 条差 +0.0050（奇数分位取整） |
+| 隐含 band 落在 9.87%–10.16%（即 ±10% 取整后的散布） | 该抽样全部吻合 |
+| 全表 782 行、市场分布 | 深 384 / 沪 394 / 北 4 |
+| `涨停 == 跌停` 的行 | 实测存在 1 条 → 解析器**不能**要求严格大于，否则真实数据会被误判为损坏 |
+| `涨停 < 跌停` 的行 | 0 条（这种一定说明解码错位，解析器直接报错拒绝） |
+
+证据：`output/limits_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -980,6 +1036,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_finance` | 10+7N 请求布局、**860 字节活体应答**的 6 条 143 字节记录解码、6 个真实上市日期、茅台总股本与工行 H 股钉死 ×10000 刻度、字段包络（总资产≥净资产、流通≤总股本）、长度不符/市场号非法/非数字代码/非日期/NaN 的拒绝、累加器与 JSONL 括号平衡与 `null` |
 | `test_capital` | 类别 key 表、9 字节请求布局、**2360 字节活体应答**的 81 条 29 字节记录解码、平安银行 2024 年 10 派 7.19 精确复现、26/26 连续股本链、324/324 双读法一致、回显证券不匹配/长度不符/类别越界/非日期/NaN 的拒绝、累加器与 JSONL 括号平衡 |
 | `test_gbbq` | 状态表 base64 解码与长度、四张表平铺 0x48/0x448/0x848/0xC48/0x1048、**真实密文**的 5 条记录解密、明文尾部原样透传、1991 年股本链跨记录衔接、2024 年 10 派 7.19 与网络源一致、长度不符/条数超限/缺证券/短输出的拒绝、24 个加密字节逐字节翻转的"损坏永不隐形"统计 |
+| `test_limits` | 14 字节请求布局与 16 位下标边界、**真实 15 字节单行应答**的解码、代码数字补零成 6 位、涨跌停中点=1.58 的取值、合成多行页的列表解码与页起始下标延续、长度不符/输出不足/市场非法/代码超 6 位/涨停低于跌停/NaN 的拒绝 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -988,7 +1045,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **`0x0452` 特别处理名单**：请求体与 13 字节记录已在参考实现里读到（`limits_request`），是下一块。
+6. **JSN 类资源解析器**：`zhb`/权息等 JSN 资源走的是已经验证过的 0x02C5/0x06B9 传输层，是下一块。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi
