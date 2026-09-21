@@ -50,6 +50,8 @@ c/
     tdx_gbbq.h            本地加密 GBBQ 权息文件
     tdx_limits.h          0x0452 特殊涨跌停表
     tdx_limits_json.h     涨跌停记录的 JSONL 渲染
+    tdx_json.h            有界 JSON 解析器
+    tdx_jsn.h             JSN 表格格式与 GBK 转换
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -63,7 +65,7 @@ c/
     tdx_auction.c  tdx_auction_json.c  tdx_snapshot.c  tdx_snapshot_json.c
     tdx_finance.c  tdx_finance_json.c  tdx_capital.c  tdx_capital_json.c
     tdx_gbbq.c  gbbq_cipher_state.h (generated)
-    tdx_limits.c  tdx_limits_json.c
+    tdx_limits.c  tdx_limits_json.c  tdx_json.c  tdx_jsn.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -76,6 +78,8 @@ c/
     test_capital.c   capital_fixtures.h (generated)
     test_gbbq.c      gbbq_fixtures.h (generated, real ciphertext)
     test_limits.c    limits_fixtures.h (generated)
+    test_json.c      (grammar vectors, no capture)
+    test_jsn.c       jsn_fixtures.h (generated, whole raw GBK payload)
 ```
 
 ## 构建
@@ -94,7 +98,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-18/18 测试通过、0 warning。
+20/20 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -186,6 +190,10 @@ tdx-l1stream capital --local --security sz000001 --root C:\new_tdx `
 
 # 特殊涨跌停表（0x0452，每行一次请求，全表约 780 行）
 tdx-l1stream limits --root C:\new_tdx --output output\limits.jsonl
+
+# JSN 资源（GBK 编码的 JSON 表格，走 0x02C5/0x06B9 传输）
+tdx-l1stream jsn --resource list/zq_tx201.jsn --root C:\new_tdx `
+                --output output\jsn-zq_tx201.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -849,6 +857,58 @@ base64 解码、Feistel 解密、记录布局四件事。
 
 证据：`output/limits_verification_evidence.txt`。
 
+## JSN 资源：GBK 编码的 JSON 表格
+
+`bi/list/*.jsn` 这类资源是**债券参考名单**（按评级、利率类型、品种分类）。它们不是行情，
+是"名单 + 属性"，而且格式与前面所有命令都不同——**它是 GBK 编码的 JSON**：
+
+```json
+[ { "colheader": ["$ZQDM", "ZSC", ...],
+    "data": [ ["020820", "1", ...], ... ] } ]
+```
+
+根是数组，每项有 `colheader`（列名数组）与 `data`（行数组），**每行宽度必须等于列数**
+——这是该格式唯一真正的约束。一行短了，它之后的每一格都会被贴上错误的列名，比直接报错更糟，
+所以本实现拒绝它，报错时说明原因。
+
+子节点用**兄弟链表**而不是连续区间：成员本身是容器时，它会把自己的子节点插在中间，
+"区间"就会指到孙节点上。JSN 的形状（对象的成员是"数组的数组"）恰好触发这个 bug——
+扁平数组时完全看不出来，是单元测试抓出来的。
+
+### 分三层，各自可单独验证
+
+| 层 | 文件 | 说明 |
+|---|---|---|
+| JSON | `tdx_json.c` | 有界解析器：转义、surrogate 对、64 层深度上限、拒绝尾随数据与前导零 |
+| 表格 | `tdx_jsn.c` | 组/行/列展平 + 宽度不变式 |
+| 编码 | `tdx_jsn.c` | GBK → UTF-8 走**系统代码页**（936），不内嵌码表 |
+
+GBK 用 `MultiByteToWideChar(936)` + `WideCharToMultiByte(CP_UTF8)`：映射精确，且不需要
+一张约 100 KB 的码表。非 Windows 平台会明确报"需要平台代码页"，而不是猜一个转换。
+
+### 实测
+
+| 检验 | 结果 |
+|---|---|
+| 小资源 `bi/list/zq_tx201.jsn`（贴现债券） | 6,969 字节 GBK → **7,221 字节 UTF-8**，1 组 42 行 20 列，MD5 校验通过 |
+| 中文列值 | **正确**（证券简称"26贴债39"、利率类型"贴现"、债券类型"国债"） |
+| 大资源 `bi/list/zq_zqqb201.jsn`（全市场债券） | **40,728,611 字节** / 1358 分块 / **42,957 行** / 约 73 秒，MD5 校验通过 |
+
+GBK→UTF-8 的长度变化本身就是证据：中文字符两字节变三字节，所以 UTF-8 一定更长；
+若只是原样透传，长度会相等。而中文能正确显示，说明 GBK 转换与 JSON 解析**两层都对**——
+任何一层错，中文就会是乱码。
+
+### 限制（诚实说明）
+
+- 本层**不解释列的含义**。每列是什么属于调用方的领域知识；这一层只保证"某格就是它表头
+  所说的那一格"。参考实现里债券目录、可转债、权息等各自的字段映射是另一件事，本次没有移植。
+- 磁盘上**没有本地 JSN 缓存**，所以这一项没有"本地 vs 网络"的对账（GBBQ 那一项有）。
+  验证依据是结构、内容合理性与端到端一致性。
+- 40 MB 的资源要 73 秒，瓶颈在传输（1358 个分块）而非解析；若需频繁读全市场债券名单，
+  应当缓存而不是每次重取。
+
+证据：`output/jsn_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1037,6 +1097,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_capital` | 类别 key 表、9 字节请求布局、**2360 字节活体应答**的 81 条 29 字节记录解码、平安银行 2024 年 10 派 7.19 精确复现、26/26 连续股本链、324/324 双读法一致、回显证券不匹配/长度不符/类别越界/非日期/NaN 的拒绝、累加器与 JSONL 括号平衡 |
 | `test_gbbq` | 状态表 base64 解码与长度、四张表平铺 0x48/0x448/0x848/0xC48/0x1048、**真实密文**的 5 条记录解密、明文尾部原样透传、1991 年股本链跨记录衔接、2024 年 10 派 7.19 与网络源一致、长度不符/条数超限/缺证券/短输出的拒绝、24 个加密字节逐字节翻转的"损坏永不隐形"统计 |
 | `test_limits` | 14 字节请求布局与 16 位下标边界、**真实 15 字节单行应答**的解码、代码数字补零成 6 位、涨跌停中点=1.58 的取值、合成多行页的列表解码与页起始下标延续、长度不符/输出不足/市场非法/代码超 6 位/涨停低于跌停/NaN 的拒绝 |
+| `test_json` | 标量/容器语法、全部转义与 surrogate 对（含孤立 surrogate 变 U+FFFD）、**多段拼接字符串必须连续**、**成员名与成员值各存一份**、嵌套数组的兄弟链表、深度上限、尾随数据/尾随逗号/缺冒号/缺逗号/前导零/未闭合/未知转义的拒绝、整数读取 |
+| `test_jsn` | 资源路径前缀规范化（前导斜杠、已带前缀不重复）、**整份真实 GBK 载荷**的转换与解析（长度必须变长）、42 行 × 20 列、中文列值精确比对、空单元格保留为空串而非 null、根非数组/缺 colheader-data/**行宽与表头不符**/行非数组的拒绝 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1045,7 +1107,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **JSN 类资源解析器**：`zhb`/权息等 JSN 资源走的是已经验证过的 0x02C5/0x06B9 传输层，是下一块。
+6. **JSN 之上的领域映射**：本层只到表格，债券目录/可转债/权息各自"哪一列是什么"
+   还没移植；这是纯数据映射，最省事的做法是照参考实现的列名逐条对。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi

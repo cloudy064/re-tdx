@@ -14,6 +14,7 @@
  *   finance     batched fundamental data (0x0010)
  *   capital     share-capital changes and ex-rights events (0x000F)
  *   limits      the special price-limit list (0x0452)
+ *   jsn         fetch a JSN resource and emit its rows (0x02C5 / 0x06B9 + JSON)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,9 +25,11 @@
 #include "tdx_capital.h"
 #include "tdx_capital_json.h"
 #include "tdx_directory.h"
+#include "tdx_download.h"
 #include "tdx_finance.h"
 #include "tdx_finance_json.h"
 #include "tdx_gbbq.h"
+#include "tdx_jsn.h"
 #include "tdx_limits.h"
 #include "tdx_limits_json.h"
 #include "tdx_snapshot.h"
@@ -65,7 +68,8 @@ static void usage(void) {
     printf("  tdx-l1stream snapshot --security CODE [--security CODE ...] [options]\n");
     printf("  tdx-l1stream finance --security CODE [--security CODE ...] [options]\n");
     printf("  tdx-l1stream capital --security CODE [--security CODE ...] [options]\n");
-    printf("  tdx-l1stream limits [--start N] [options]\n\n");
+    printf("  tdx-l1stream limits [--start N] [options]\n");
+    printf("  tdx-l1stream jsn --resource PATH [options]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -125,6 +129,9 @@ static void usage(void) {
     printf("  --start N            row to resume from, default 0\n");
     printf("  --max-records N      cap how many rows the walk takes, default %u\n\n",
            (unsigned)TDX_LIMITS_MAX_RECORDS);
+    printf("jsn:\n");
+    printf("  --resource PATH      resource under the prefix, e.g. list/zq_aaa201.jsn\n");
+    printf("  --prefix NAME        resource prefix, default bi\n\n");
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -180,6 +187,8 @@ typedef struct cli_options {
     unsigned selector;
     int capital_local;   /* read the local encrypted GBBQ file instead of 0x000F */
     const char *gbbq_path; /* NULL means <root>\T0002\hq_cache\gbbq */
+    const char *resource;
+    const char *prefix;
 } cli_options;
 
 static void options_init(cli_options *options) {
@@ -482,6 +491,10 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
             options->selector = (unsigned)parsed;
         } else if (strcmp(argument, "--gbbq") == 0) {
             options->gbbq_path = value;
+        } else if (strcmp(argument, "--resource") == 0) {
+            options->resource = value;
+        } else if (strcmp(argument, "--prefix") == 0) {
+            options->prefix = value;
         } else {
             tdx_error_set(err, "unknown option: %s", argument);
             return TDX_ERR;
@@ -2065,6 +2078,130 @@ close_output:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* jsn                                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Fetches one JSN resource through the file-transfer commands, converts it from
+ * GBK and flattens its groups into one JSONL row per record. */
+static int command_jsn(const cli_options *options, tdx_error *err) {
+    char remote[TDX_JSN_RESOURCE_MAX + 16];
+    char endpoint[80];
+    tdx_buf raw;
+    tdx_buf utf8;
+    tdx_buf line;
+    tdx_jsn_document document;
+    tdx_file_info info;
+    FILE *stream;
+    size_t group_index;
+    size_t row;
+    size_t group_count = 0;
+    size_t row_count = 0;
+    int status = TDX_ERR;
+
+    if (!options->resource || !*options->resource) {
+        tdx_error_set(err, "jsn needs --resource");
+        return TDX_ERR;
+    }
+    if (tdx_jsn_remote_path(options->resource, options->prefix, remote, sizeof(remote), err) !=
+        TDX_OK)
+        return TDX_ERR;
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        return TDX_ERR;
+    }
+    tdx_buf_init(&raw);
+    tdx_buf_init(&utf8);
+    tdx_buf_init(&line);
+    tdx_jsn_document_init(&document);
+    memset(endpoint, 0, sizeof(endpoint));
+    memset(&info, 0, sizeof(info));
+
+    /* The transfer verifies the announced digest when there is one: a short or
+     * reordered chunk stream must never look like a complete resource. */
+    if (tdx_download_resource(&options->pool, options->timeout_ms, remote, 1, &raw, &info,
+                              endpoint, sizeof(endpoint), err) != TDX_OK)
+        goto close_output;
+    if (!options->quiet)
+        fprintf(stderr, "jsn %s: %zu bytes, md5=%s, endpoint=%s\n", remote, raw.len,
+                info.md5[0] ? info.md5 : "(none)", endpoint);
+    if (tdx_jsn_gbk_to_utf8(raw.data, raw.len, &utf8, err) != TDX_OK)
+        goto close_output;
+    if (tdx_jsn_parse(utf8.data, utf8.len, &document, err) != TDX_OK)
+        goto close_output;
+
+    for (group_index = 0; group_index < tdx_jsn_group_count(&document); ++group_index) {
+        const tdx_jsn_group *group = &document.groups[group_index];
+        size_t column;
+
+        for (row = 0; row < group->row_count; ++row) {
+            tdx_buf_clear(&line);
+            if (tdx_buf_append_printf(&line, err,
+                                      "{\"type\":\"jsn_row\",\"resource\":\"%s\",\"group\":%zu,"
+                                      "\"row\":%zu",
+                                      remote, group_index, row) != TDX_OK)
+                goto close_output;
+            for (column = 0; column < group->column_count; ++column) {
+                const char *name = tdx_jsn_column_name(&document, group, column);
+                if (tdx_buf_append(&line, ",", 1, err) != TDX_OK)
+                    goto close_output;
+                /* The column name comes from the resource, so it is escaped rather
+                 * than pasted: a header with a quote in it must not break the row. */
+                if (tdx_format_json_string(&line, name ? name : "", err) != TDX_OK)
+                    goto close_output;
+                if (tdx_buf_append(&line, ":", 1, err) != TDX_OK)
+                    goto close_output;
+                if (tdx_jsn_cell_json(&document, group, row, column, &line, err) != TDX_OK)
+                    goto close_output;
+            }
+            if (tdx_buf_push(&line, '}', err) != TDX_OK)
+                goto close_output;
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+                goto close_output;
+            if (fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the jsn stream");
+                goto close_output;
+            }
+        }
+    }
+    /* Captured before the document is freed, because reading them afterwards
+     * would be reading freed memory. */
+    group_count = document.group_count;
+    row_count = document.row_count;
+    tdx_buf_clear(&line);
+    if (tdx_buf_append_printf(&line, err,
+                              "{\"type\":\"jsn_summary\",\"resource\":\"%s\",\"bytes\":%zu,"
+                              "\"md5\":\"%s\",\"groups\":%zu,\"rows\":%zu,\"endpoint\":",
+                              remote, raw.len, info.md5, group_count, row_count) != TDX_OK)
+        goto close_output;
+    if (tdx_format_json_string(&line, endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_append(&line, "}", 1, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the jsn summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    tdx_jsn_document_free(&document);
+    tdx_buf_free(&raw);
+    tdx_buf_free(&utf8);
+    tdx_buf_free(&line);
+    if (status != TDX_OK)
+        return status;
+    if (!options->quiet)
+        fprintf(stderr, "jsn: %zu groups, %zu rows\n", group_count, row_count);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -2141,6 +2278,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "limits") == 0) {
         if (command_limits(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "jsn") == 0) {
+        if (command_jsn(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }
