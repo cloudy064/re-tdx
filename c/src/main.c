@@ -11,6 +11,7 @@
  *   timeline    today's intraday time-share series (0x0537)
  *   auction     call-auction point series (0x056A)
  *   snapshot    batched whole-universe L1 snapshot (0x054C)
+ *   finance     batched fundamental data (0x0010)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,8 @@
 #include "tdx_auction.h"
 #include "tdx_auction_json.h"
 #include "tdx_directory.h"
+#include "tdx_finance.h"
+#include "tdx_finance_json.h"
 #include "tdx_snapshot.h"
 #include "tdx_snapshot_json.h"
 #include "tdx_format.h"
@@ -52,7 +55,8 @@ static void usage(void) {
     printf("  tdx-l1stream kline --security CODE --period PERIOD [options]\n");
     printf("  tdx-l1stream timeline --security CODE [options]\n");
     printf("  tdx-l1stream auction --security CODE [options]\n");
-    printf("  tdx-l1stream snapshot --security CODE [--security CODE ...] [options]\n\n");
+    printf("  tdx-l1stream snapshot --security CODE [--security CODE ...] [options]\n");
+    printf("  tdx-l1stream finance --security CODE [--security CODE ...] [options]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -97,6 +101,9 @@ static void usage(void) {
     printf("  --batch-size N       securities per request; the server caps this command\n");
     printf("                       at %u, so a larger value is reduced to %u\n\n",
            (unsigned)TDX_SNAPSHOT_BATCH_MAX, (unsigned)TDX_SNAPSHOT_BATCH_MAX);
+    printf("finance:\n");
+    printf("  --batch-size N       securities per request, default 100, max %u\n\n",
+           (unsigned)TDX_FINANCE_BATCH_MAX);
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -1681,6 +1688,125 @@ close_output:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* finance                                                             */
+/* ------------------------------------------------------------------ */
+
+/* Batches the universe through 0x0010.  Unlike the quote commands this one takes
+ * a whole list per request and answers with one dense fixed-size record each, so
+ * the only integrity question is the length, which the parser answers strictly. */
+static int command_finance(const cli_options *options, tdx_error *err) {
+    tdx_connection connection;
+    tdx_finance_record records[TDX_FINANCE_BATCH_MAX];
+    tdx_finance_tally tally;
+    tdx_code *codes = NULL;
+    size_t code_count = 0;
+    tdx_buf line;
+    FILE *stream;
+    char endpoint[80];
+    size_t batch = options->batch_size;
+    size_t offset;
+    int status = TDX_ERR;
+
+    if (batch < 1)
+        batch = 100;
+    if (batch > TDX_FINANCE_BATCH_MAX)
+        batch = TDX_FINANCE_BATCH_MAX;
+    if (build_universe(options, &codes, &code_count, err) != TDX_OK)
+        return TDX_ERR;
+    if (code_count == 0) {
+        tdx_error_set(err, "the universe is empty");
+        free(codes);
+        return TDX_ERR;
+    }
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        free(codes);
+        return TDX_ERR;
+    }
+    tdx_buf_init(&line);
+    tdx_finance_tally_init(&tally);
+    memset(endpoint, 0, sizeof(endpoint));
+    memset(&connection, 0, sizeof(connection));
+    connection.socket_handle = (intptr_t)-1;
+
+    for (offset = 0; offset < code_count; offset += batch) {
+        size_t want = code_count - offset;
+        size_t got = 0;
+        size_t index;
+        tdx_error step;
+
+        if (want > batch)
+            want = batch;
+        /* A long walk of this command does get a transient timeout from the
+         * server - a whole-market run died after forty-eight clean batches - so
+         * each batch is retried on a fresh connection before the command gives
+         * up.  Only transport failures are retried: a decode error is a bug and
+         * retrying it would just hide the message. */
+        {
+            int attempt;
+            int done = 0;
+            for (attempt = 0; attempt < TDX_FINANCE_ATTEMPTS && !done; ++attempt) {
+                step.message[0] = '\0';
+                if (tdx_connection_open(&connection, &options->pool.items[0],
+                                        options->timeout_ms, &step) != TDX_OK) {
+                    *err = step;
+                    continue;
+                }
+                if (tdx_finance_fetch(&connection, codes + offset, want, records,
+                                      TDX_FINANCE_BATCH_MAX, &got, &step) != TDX_OK) {
+                    tdx_connection_close(&connection);
+                    *err = step;
+                    continue;
+                }
+                tdx_endpoint_address(&options->pool.items[0], endpoint, sizeof(endpoint));
+                tdx_connection_close(&connection);
+                done = 1;
+            }
+            if (!done)
+                goto close_output;
+        }
+        /* The server does drop securities it holds nothing for; that is a short
+         * answer rather than a failure, so it is reported, not fatal. */
+        for (index = 0; index < got; ++index) {
+            tdx_buf_clear(&line);
+            if (tdx_finance_format(&line, &records[index], err) != TDX_OK)
+                goto close_output;
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+                goto close_output;
+            if (fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the finance stream");
+                goto close_output;
+            }
+        }
+        tdx_finance_tally_add(&tally, records, got);
+    }
+    tdx_buf_clear(&line);
+    if (tdx_finance_format_summary(&line, &tally, endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the finance summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    free(codes);
+    tdx_buf_free(&line);
+    if (status != TDX_OK)
+        return status;
+    if (!options->quiet)
+        fprintf(stderr, "finance: %zu of %zu securities in batches of %zu, endpoint=%s\n",
+                tally.record_count, code_count, batch, endpoint);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -1736,6 +1862,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "snapshot") == 0) {
         if (command_snapshot(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "finance") == 0) {
+        if (command_finance(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }
