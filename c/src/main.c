@@ -14,6 +14,7 @@
  *   ranking     the category ranking over 0x054B, paged
  *   seal        the sealed-order figure for one security, from its 0x0547 depth
  *   panorama    the market panorama: ten typed projections, and the catalog
+ *   blocks      the block families from the local cache files, with their hierarchy
  *   trades      L1 trade details (minute resolution) for today or one date
  *   kline       multi-period K-lines (0x052D)
  *   timeline    today's intraday time-share series (0x0537)
@@ -74,6 +75,8 @@
 #include "tdx_pending_json.h"
 #include "tdx_limits_json.h"
 #include "tdx_snapshot.h"
+#include "tdx_blocks.h"
+#include "tdx_blocks_json.h"
 #include "tdx_panorama.h"
 #include "tdx_panorama_json.h"
 #include "tdx_ranking.h"
@@ -266,6 +269,8 @@ typedef struct cli_options {
     const char *sort;
     const char *lc1_output;
     const char *view;
+    int show_members;
+    int show_assignments;
     int ascending;
     double previous_close;
     int has_previous_close;
@@ -393,6 +398,14 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
         }
         if (strcmp(argument, "--ascending") == 0) {
             options->ascending = 1;
+            continue;
+        }
+        if (strcmp(argument, "--members") == 0) {
+            options->show_members = 1;
+            continue;
+        }
+        if (strcmp(argument, "--assignments") == 0) {
+            options->show_assignments = 1;
             continue;
         }
         if (strcmp(argument, "--index") == 0) {
@@ -4760,6 +4773,118 @@ done:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* blocks                                                              */
+/* ------------------------------------------------------------------ */
+
+/* The block families: the industry catalog and its hierarchy, concept/style/index blocks with
+ * their members, and each security's industry assignment.  All of it from the local cache. */
+static int command_blocks(const cli_options *options, tdx_error *err) {
+    static tdx_buf line;
+    tdx_block *blocks = NULL;
+    tdx_block_member *members = NULL;
+    tdx_block_assignment *assignments = NULL;
+    tdx_blocks_load_report report;
+    FILE *stream = NULL;
+    size_t block_count = 0;
+    size_t member_count = 0;
+    size_t assignment_count = 0;
+    size_t emitted = 0;
+    size_t index;
+    int status = TDX_ERR;
+
+    blocks = (tdx_block *)calloc(TDX_BLOCKS_MAX, sizeof(*blocks));
+    members = (tdx_block_member *)calloc(TDX_BLOCKS_MEMBERS_MAX, sizeof(*members));
+    assignments = (tdx_block_assignment *)calloc(TDX_BLOCKS_MEMBERS_MAX, sizeof(*assignments));
+    if (!blocks || !members || !assignments) {
+        tdx_error_set(err, "out of memory for the block tables");
+        goto done;
+    }
+    if (tdx_blocks_load(options->root, blocks, TDX_BLOCKS_MAX, &block_count, members,
+                        TDX_BLOCKS_MEMBERS_MAX, &member_count, assignments,
+                        TDX_BLOCKS_MEMBERS_MAX, &assignment_count, &report, err) != TDX_OK)
+        goto done;
+    if (!options->quiet)
+        fprintf(stderr,
+                "blocks: catalog %s, assignments %s, infoharbor %s, %zu blocks, %zu members, "
+                "%zu assignments, %zu declared-count mismatches\n",
+                report.industry_catalog_read ? "read" : "absent",
+                report.industry_assignments_read ? "read" : "absent",
+                report.infoharbor_read ? "read" : "absent", block_count, member_count,
+                assignment_count, report.count_mismatches);
+
+    tdx_buf_init(&line);
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    for (index = 0; index < block_count; ++index) {
+        if (options->max_records && emitted >= options->max_records)
+            break;
+        tdx_buf_clear(&line);
+        if (tdx_blocks_format_block(&line, &blocks[index], index, err) != TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+            fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the block stream");
+            goto close_output;
+        }
+        emitted++;
+    }
+    if (options->show_members) {
+        for (index = 0; index < member_count; ++index) {
+            if (options->max_records && emitted >= options->max_records)
+                break;
+            tdx_buf_clear(&line);
+            if (tdx_blocks_format_member(&line, &members[index], index, err) != TDX_OK)
+                goto close_output;
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+                fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the member stream");
+                goto close_output;
+            }
+            emitted++;
+        }
+    }
+    if (options->show_assignments) {
+        for (index = 0; index < assignment_count; ++index) {
+            if (options->max_records && emitted >= options->max_records)
+                break;
+            tdx_buf_clear(&line);
+            if (tdx_blocks_format_assignment(&line, &assignments[index], index, err) != TDX_OK)
+                goto close_output;
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+                fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the assignment stream");
+                goto close_output;
+            }
+            emitted++;
+        }
+    }
+    tdx_buf_clear(&line);
+    if (tdx_blocks_format_summary(&line, block_count, member_count, assignment_count, &report,
+                                  options->root, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+        fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the block summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output && stream)
+        fclose(stream);
+done:
+    free(blocks);
+    free(members);
+    free(assignments);
+    tdx_buf_free(&line);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -4878,6 +5003,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "newbond") == 0) {
         if (command_newbond(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "blocks") == 0) {
+        if (command_blocks(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

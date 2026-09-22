@@ -86,6 +86,8 @@ c/
     tdx_seal_json.h        封单结果与其输入的 JSONL 渲染
     tdx_panorama.h         市场全景：视图注册表与类型化投影
     tdx_panorama_json.h    视图/投影行/汇总的 JSONL 渲染
+    tdx_blocks.h           板块家族：行业目录/层级/成员、概念风格指数
+    tdx_blocks_json.h      块/成员/分配/汇总的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -110,6 +112,7 @@ c/
     tdx_limit.c  tdx_valuation.c  tdx_valuation_json.c
     tdx_ranking.c  tdx_ranking_json.c  tdx_seal.c  tdx_seal_json.c
     tdx_panorama.c  tdx_panorama_json.c  tdx_panorama_views.c (GENERATED)
+    tdx_blocks.c  tdx_blocks_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -143,6 +146,7 @@ c/
     test_ranking.c (a response built by the test, its varints computed)
     test_seal.c (the three seal paths, built from inputs)
     test_panorama.c (the registry whole, and synthetic projections)
+    test_blocks.c (the three file shapes, built; the hierarchy arithmetic)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
 ```
@@ -163,7 +167,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-39/39 测试通过、0 warning。
+40/40 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -249,6 +253,9 @@ tdx-l1stream panorama --output output\panorama-catalog.jsonl
 # 再看某个视图的类型化投影
 tdx-l1stream panorama --view quality-rating --limit 100 `
                      --output output\panorama-quality.jsonl
+
+# 板块层级（读本机三份缓存文件）；--members / --assignments 附带成员与归属
+tdx-l1stream blocks --root C:\new_tdx --output output\blocks.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -2219,6 +2226,56 @@ if (bid2.volume_hand && ...)                   /* 量却在 */
 
 证据：`output/panorama_verification_evidence.txt`。
 
+## 板块层级：`blocks`（三份本地文件）
+
+| 文件 | 大小 | 内容 |
+|---|---:|---|
+| `T0002/hq_cache/tdxzs3.cfg` | 32,730 | 行业目录：**6 个竖线字段**（名/码/**类型**/计数/叶子标志/源键） |
+| `T0002/hq_cache/tdxhy.cfg` | 150,440 | 每只证券的行业与研究行业归属 |
+| `T0002/hq_cache/infoharbor_block.dat` | 742,056 | 概念/风格/指数的**成员**（表头 7 个逗号字段 + 成员行） |
+
+实测：**1,159 个块 / 79,514 个成员 / 5,663 条分配**。
+
+### 层级在**键里**，不在一列父块里
+
+源键 `T010101` 的父块是 `T0101`，层级是 `(长度−1)/2`。所以：
+- 父块 = **去掉末两字符**再查表（**边界是三字符**：三字符无父块，四字符会得到一个两字符的"退化父块"）；
+- 键必须以 **`T` 或 `X`** 开头，否则**拒绝**——形状不对是 bug，不是"层级浅"。
+
+实测 **569 条父子链，与我独立算出的"去尾两字符"0 处不符** ✓ 层级分布与 `T01`→`T0101`→`T010101` 的嵌套一致 ✓
+
+### 文件**自己会自检**：声明的成员数 vs 实际解析数
+
+每个 infoharbor 表头都声明后随成员数。实测 **1,159 个块、0 处不符** ✓
+**这不是我外加的检查——1000 多个块各自声明一个数、我数出另一个数，两边全部相等。**
+如果把成员行的分隔或 `市场#代码` 切错，这里会**大批不符**。
+
+**不一致时是"计数并报告"，不是拒绝**：一个声明 88、实带 87 的块是在**说明文件的状态**，
+拒绝读取只会把它藏起来。测试对这条专门断言（`0 处不符` 与"计数但不报错"两条并存 ✓）。
+
+### 跨源验证：两条独立路径给出同样的成员数
+
+分配文件给的是 `T010101`，资源给的是发布码 `880302`——**中间那次映射只有把两个文件接起来才存在**。
+按这条链归并后与 `hyzt` 资源的声明清单对照：**110 个行业里 98 个成员数完全相同** ✓
+
+**另外 12 处不同，结论是"未判定"，而不是"本地更新"或"我接错了"**：
+
+那 15 个差异代码（**6 个是北交所/新三板**：920202/920201/920025/920229/920157/874774）
+出现在**本地板块文件**里，但**本机没有任何它们的行情数据**（15/15 无 `.day` 文件）；
+资源清单不含它们。两边各自自洽，**谁更全需要一个带日期的参照**——本机没有。
+
+> **我第一版分析脚本直接在末尾写了"这些是次新股"，而上面那张表是 15 行 `NO .day FILE`。**
+> 结论被自己的输出当场反驳。**把结论写进脚本、而不是从测量里得出**，
+> 正是本项目一直在防的那类错误——它这次活了下来，因为那句话**看起来很合理**。
+> 结论改成由 `found`/`recent` 两个计数导出之后才成立。
+
+### 未做的部分
+
+不做**成员并集**（把子块成员并入父块）：那要先选定一个根，而"选哪个根"取决于调用方。
+
+证据：`output/blocks_verification_evidence.txt`、`blocks_difference_analysis.txt`、
+`blocks_difference_direction.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -2440,6 +2497,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_seal` | 三条路径**各自构造**（活体只在盘中命中其中一条）：**连续涨停**（现价==上限且卖一不存在 ⇒ 封单=买一量、金额 497,408,562、比值 7.359385）、**跌停方向**（金额与比值**为负**）、**两侧都有挂单即使现价恰在限价也不封**、竞价不平衡（无现价、两侧交叉，比值为 null 而非 0）、**竞价二档**（二档**价缺席而量存在**、一档量并入分母；**给二档设价格即跳出该分支**）、拒绝状态掩码 `0x3C`**不是**、`0x5C`**是**、限价不可用/每手为 0/无成交时各字段的可用性、渲染可被项目自己的解析器解析且输入随结果一起输出 |
 | `test_minute_pack` | **真实终端字节 → 解析 → 重新打包 → 逐字节相同**（不只是读取器命名的字段）、**违规窗口往返后仍然违规**（写入器不修正）、编码/解码在六年真实日期上**互为逆**、**2035-12-31 是可表达的最后一个日期**（年份界 4051 是假的界，16 位字才是）、日期/小时/分钟的拒绝、**量超出 32 位被拒而 0xFFFFFFFF 被接受**（是边界不是一刀切）、尾两字被原样带过而非丢弃 |
 | `test_panorama` | 注册表**整份**（`10 个视图 / 112 条字段映射 / 最宽 18 列`——生成器若静默少匹配，这几条会立刻失败）、每个资源前缀与**互不重复**、按 id 查找（大小写不敏感、未知拒绝）、**`catalog` 不是注册项而是视图**、`lhb-overview` 用 `$SC1/$ZQDM1` 而首个视图用 `$SC`（键列随注册表走）、合成投影（字段名映射、**资源缺列 ⇒ 缺席**、空单元格 ⇒ 无值、缺码/坏码的行跳过并计数）、渲染可被项目自己的解析器解析、**字段名出现而列代码不出现** |
+| `test_blocks` | 键算术（**三字符无父块、四字符给出退化父块**、`T`/`X` 之外拒绝）、三族的 `GN`/`FG`/`ZS` 与前缀拒绝、行业目录（**类型 2/12 之外跳过并计数**、**父块在文件后面也能解析**、重复源键拒绝、字段数不符拒绝）、分配（市场非数字拒绝、两个行业码取自第 3/6 字段）、infoharbor（表头 7 字段、**末尾逗号跳过**、身份与市场前缀、**声明数不符时计数而不报错且两数都可见**、成员先于表头拒绝、未知族拒绝、缺市场拒绝）、四个渲染器全部断言可解析 |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -2494,11 +2552,10 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 8. **历史 `.img` 的公网取数被挡**：公开节点一律报长度 0；需要恢复带权益会话的握手/口令
    链路，或继续依赖客户端自己的缓存。
 
-### 在范围内、尚未做
+### 在范围内
 
-15. **板块层级展开**：`hyzt` 之上的父子板块 / 成员并集 / 层级树。
-    **第 21 轮已判为在范围内**（只读本机三个本地文件，`hyzt.cpp` 传的就是本地 root），
-    是本目标目前**唯一一件确定还能做的事**。
+15. **板块层级**：**已交付**（见"板块层级"一节）。父子链、层级、直接成员、**
+    三份文件的跨源对照都已做并验证**；"成员并集"有意不做（要先选定一个根，取决于调用方）。
 
 ### 已测量但只覆盖了一部分
 
