@@ -64,6 +64,8 @@ c/
     tdx_bond_math.h        应计利息/现金流/贴现/YTM 求解
     tdx_pricing.h          定价视图：条款 + 报价联接 + 估值
     tdx_pricing_json.h     定价行的 JSONL 渲染
+    tdx_newbond.h          新债投影映射与对账
+    tdx_newbond_json.h     投影行与对账的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -81,7 +83,7 @@ c/
     tdx_bonds.c  tdx_bonds_json.c  tdx_convertible.c  tdx_convertible_json.c
     tdx_convertible_join.c  tdx_pending.c  tdx_pending_json.c
     tdx_subscription.c  tdx_subscription_json.c  tdx_bond_math.c
-    tdx_pricing.c  tdx_pricing_json.c
+    tdx_pricing.c  tdx_pricing_json.c  tdx_newbond.c  tdx_newbond_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -103,6 +105,8 @@ c/
     test_subscription.c  subscription_fixtures.h (generated, reduced capture)
     test_bond_math.c (calendar vs Python, closed form, fixed point, refusals)
     test_pricing.c   pricing_fixtures.h (generated, three shapes)
+    test_newbond.c   (shares subscription_fixtures.h, which now also carries the
+                      projection whole and the subscriptions it names)
 ```
 
 ## 构建
@@ -121,7 +125,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-27/27 测试通过、0 warning。
+28/28 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -241,6 +245,10 @@ tdx-l1stream subscription --root C:\new_tdx `
 # 定价：条款 + 实时报价联接 + 估值
 tdx-l1stream pricing --root C:\new_tdx `
                      --output output\pricing.jsonl
+
+# 新债投影与申购列表对账
+tdx-l1stream newbond --root C:\new_tdx `
+                     --output output\newbond.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -1352,6 +1360,54 @@ SH605589 / SZ000422 / SZ002997）。若把它们当成同一份数据的不同�
 
 证据：`output/pricing_verification_evidence.txt`。
 
+## 新债投影对账（`newbond`）
+
+第二份独立的"即将发行"清单，与申购列表**互相对照**而不是单信一份：
+
+| 资源 | 角色 | 实测规模 |
+|---|---|---:|
+| `list/func_kkzss101_1.jsn` | 主资源（申购） | 50,783 字节 / 319 行 / 16 列 |
+| `list/gxjty_zq_xkzz102_1.jsn` | 投影 | 2,824 字节 / 13 行 / 20 列 |
+
+匹配规则照参考实现：**申购代码优先，标的证券兜底**，并且报出究竟走了哪一种——
+**代码匹配是较强证据，兜底匹配是较弱证据**，读者应当知道拿到的是哪一种。
+
+### 实测对账结果
+
+```
+13 行投影，319 行申购
+13/13 按申购代码匹配，0 只走兜底，0 只未匹配
+0 处日期不一致
+2 处发行规模不一致（+9.80 亿 / -4.22 亿）
+```
+
+**那 2 处不一致才是这个对账的意义**——否则它只是把两份一样的清单念了一遍。
+
+### 一个差点被写进证据的假象
+
+我的第一版分析脚本报出 **"13/13 全部日期不一致"**。这个数字太整齐，所以去看了原始值：
+
+| 来源 | 原始值 |
+|---|---|
+| 投影 `sgrq` | `"2026-06-26 星期五"`（带中文星期） |
+| 申购 `sgrq` | `"20260626"`（紧凑） |
+
+参考实现的 `compact_date_prefix` 正是为消除这个差异而存在的。**我拿未压缩的投影日期去比申购的紧凑日期，
+于是每一行都"不一致"——那个 13/13 量的是我的比较方式，不是债券的事实。** 修正后是 **0 处**。
+
+测试把这一点固化成了断言：**如果谁把日期压缩去掉，这个计数会立刻变成 13，而断言正是期望 0**。
+
+### 匹配的语义正确性（不只是字符串相等）
+
+首行：投影 `sgdm=070422`（宜化发债，标的 SZ000422，计划 33 亿）→ 命中申购
+`convertible-subscription:0:127114:20260626` → `primary_bond = SZ127114`，**其标的正是 SZ000422** ✓，
+两边规模都是 33 亿、差额 0。测试对全部 13 行都断言了"匹配到的申购行的标的 == 投影点名的标的"。
+
+规模差异的容忍度是 **0.01 亿（100 万元）**：栏目单位是亿元，低于 100 万的差异不当作分歧，
+否则浮点噪声会被当成新闻。
+
+证据：`output/newbond_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1549,6 +1605,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_subscription` | 两个派生指标在抓包数字上的取值、**除法保护**（转股价 0 / −0 / 无穷、转股价值 0 / 无穷、NULL 输出）、**16 列**真实抓包前三行的映射、三类中文名精确比对、事件 id 拼法与缺日期时的尾冒号、债券或正股身份任一不可读即**跳过并计数**、身份齐全但输入全空时事件仍成立且两个指标**缺失而非 0**、渲染括号平衡 |
 | `test_bond_math` | **日序数与 Python datetime 对照**（含闰日、整百年、跨年、带连字符）、日期非法/短/空/NULL 的拒绝、CSV 文本与数值解析（跳过非数字与空项、容量不足截断）、应计利息取**第一项**利率与付息日当天为 0、期外拒绝、**最后一笔同时偿还面值**（103 而非 3）、现金流按时间升序、**单笔现金流的闭式解**、**贴现回代的不动点**、利率 ≤ −100%、空现金流、零/负价格、**区间夹不住的价格**的拒绝 |
 | `test_pricing` | **43 列**真实抓包按"每种形态取第一只"选取的三行（普通转债 / 仅剩一期 / 可交换债）、触发价 = 转股价 × 比例、票息表数组化、**应计利息与全价在抓包窗口上的精确取值**、转股价值与溢价率、**到期收益率为负时符号正确**（防后人"修"它）、报价**现价优先/昨收兜底**且来源随价格输出、无报价时退化为 terms-only 而条款仍在、只有正股报价时转股价值**仍然有值**（它不需要债券价）、**>10 倍面值被标注 price_plausible 而数字仍保留**、738 元真实高价**不被误标**、容量不足的拒绝、渲染括号平衡 |
+| `test_newbond` | 日期压缩（带星期/带连字符/已紧凑/非八位/空/NULL）、**20 列**投影抓包的映射（代码 + 标的 + 原始与压缩日期并存）、**13/13 按代码匹配而 0 处日期不一致**（去掉压缩立刻变 13，断言期望 0）、**2 处规模不一致且较大者为 9.80 亿**、合成用例覆盖"同代码多行由标的择优"与"代码无果才兜底"、未匹配行的代码上报、完全一致时为 exact、**每一行都断言语义一致性**（匹配到的申购行标的 == 投影标的）、全部 13 行渲染括号平衡 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1557,9 +1614,9 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **两条遗留**：① 共享价格除数表缺 `13` 规则，导致 `132xxx`（可交换债）线上价格大 100 倍；
-   已标注未修（理由见"可转债定价视图"一节，需要先把 `13` 全族逐类测一遍）；
-   ② `gxjty_zq_xkzz102`（新债投影与申购的匹配报告）尚未移植。
+6. **共享价格除数表缺 `13` 规则**：导致 `132xxx`（可交换债）线上价格大 100 倍。
+   已在定价视图标注（`price_plausible`）但未修——要改需先把 `13` 全族逐类测量，
+   理由是"改一个共享策略"的影响面远大于这一个缺陷。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi
