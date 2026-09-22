@@ -72,6 +72,8 @@ c/
     tdx_zip.h              够用即止的 ZIP 读取（EOCD/中央目录/CRC）
     tdx_daily.h            本地 .day 日线（32 字节记录 + 按品种的价格口径）
     tdx_daily_json.h       日线 bar 与汇总的 JSONL 渲染
+    tdx_minute.h           本地 .lc1 分钟线（OHLC 越界只计数不拒绝）
+    tdx_minute_json.h      分钟 bar 与汇总的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -92,6 +94,7 @@ c/
     tdx_pricing.c  tdx_pricing_json.c  tdx_newbond.c  tdx_newbond_json.c
     tdx_professional.c  tdx_professional_json.c
     tdx_professional_finance.c  tdx_zip.c  tdx_daily.c  tdx_daily_json.c
+    tdx_minute.c  tdx_minute_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -117,6 +120,7 @@ c/
                       projection whole and the subscriptions it names)
     test_professional.c  professional_fixtures.h (generated, real .dat prefixes)
     test_daily.c  daily_fixtures.h (generated, real .day prefixes)
+    test_minute.c  minute_fixtures.h (generated, a real .lc1 violation window)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
 ```
@@ -137,7 +141,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-31/31 测试通过、0 warning。
+32/32 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -184,6 +188,10 @@ tdx-l1stream day --security sz000623 --date 20260612 `
 # 本地日线：32 字节记录的 .day 文件，价格口径按品种（不联网）
 tdx-l1stream daily --security sh600519 --root C:\new_tdx `
                   --output output\daily-sh600519.jsonl
+
+# 本地分钟线：32 字节记录，价格已是元（不需要口径规则）
+tdx-l1stream minute --security sh600519 --root C:\new_tdx `
+                   --output output\minute-sh600519.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -1638,6 +1646,61 @@ tdxgp/gpsh880471.dat          板块级
 
 证据：`output/daily_verification_evidence.txt`。
 
+## 本地分钟线：`.lc1` 文件（`minute`）
+
+终端自己的 `vipdoc/<市场>/minline/<市场><代码>.lc1`，**32 字节定长、无文件头**：
+
+| 偏移 | 类型 | 含义 |
+|---:|---|---|
+| 0 | `u16` | 日期字：`year = word/2048 + 2004`，余数给 MMDD |
+| 2 | `u16` | 分钟字：`hour*60 + minute` |
+| 4 / 8 / 12 / 16 | `f32` | 开 / 高 / 低 / 收 |
+| 20 | `f32` | 成交额 |
+| 24 | `u32` | 成交量 |
+| 28 / 30 | `u16` | 两个**语义未确立**的字 |
+
+### 与 `.day` 相邻却相反：这里**不需要**口径规则
+
+`.day` 是缩放整数、除数按品种变（股票 100、基金 1000、债券 10000）。`.lc1` 是 `f32`，
+实测与**同一只证券的线上现价**之比：股票 1.16 / 1.00、债券 1.27 / 1.10、
+基金 1.02 / 0.90、指数 1.01、逆回购 0.86 —— **全部量级 1**，所以**不需要任何除数规则**。
+两个模块相邻，**照搬上一轮的结论就会出错**，所以两边都单独测了。
+
+### 参考实现那条 OHLC 校验会拒掉真实文件（本轮最重要的发现）
+
+参考 refuse 掉 `high < close` 的记录。扫描本机 **884 个 `.lc1`、13,905,607 条记录**：
+
+| 检查项 | 实测 |
+|---|---|
+| 尺寸非 32 倍数 / 日期字非法 / 分钟字非法 / 非有限值 | **各 0 条** ⇒ 这四项**强制校验** |
+| **OHLC 越界** | **6 条（真实存在）** ⇒ **只计数、不拒绝** |
+
+例：`sh000043` 的 `H 2608.770` 而 `C 2608.780`；`sh000689` 的 `L 1113.950` 而 `C 1113.960`。
+**照抄参考会把终端自己写的文件判为错误。** 而且违规记录出现在 **15:00 收盘那一分钟**——
+收盘集合竞价正好是它越界一个百分点的合理解释，这也正是"不该拒"的理由。
+
+**两个独立实现对同一批文件的计数一致**：`sh000043` 1/1、`sh000689` 1/1、`sh600519` 0/0、
+`sh000001` 0/0 ✓ 所以本实现的 `ohlc_violations` 不是自说自话。
+
+### 尾部两个字：报告而**不命名**
+
+实测 `sh600519` 全部 **16,080 条的两个字都是 0**；而 `sh000001`（上证指数）是
+`731/1378`、`804/1311` 这样**逐分钟变化**的值。所以它们与品种有关，但**语义未确立**——
+本实现按 `extra_1` / `extra_2` 原样输出。**给不知道的东西编一个名字，比留着数字更糟。**
+
+### 验证
+
+| 检验 | 结果 |
+|---|---|
+| 日期字解码 | `43814 → 20250806`、`44122 → 20251114`；**字 0 不是 2004-01-01**（余数 0 即月份 0），最小合法字是 `101` |
+| 普通窗口（真实前缀） | 逐字段断言；股票的两个尾字均为 0 |
+| **违规窗口（真实前缀）** | **仍解析成功**、`ohlc_violations == 1`、**违规记录本身被完整返回**（计数不是修正） |
+| 拒绝 | 非 32 倍数、分钟字 ≥ 1440（1439 即 23:59 **接受**）、月份 0、NaN 价格、容量不足 |
+| 路径定位 | 沪深北；扩展市场**主动拒绝**（分钟线不存在），短缓冲拒绝 |
+| 渲染 | 行能被项目自己的 JSON 解析器解析（含带反斜杠路径与空的汇总） |
+
+证据：`output/minute_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1851,6 +1914,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_professional` | 三张字段表的大小与**表外 id 返回空名字**、**真实 .dat 前缀**（个股 + 板块）逐字节解析并断言取值（含 f32 位精确比对）、**长度非 13 倍数 / 2 月 31 日 / 月 13 一律拒绝**而真实闰日接受、无日期记录在区间内被排除但不带区间时保留、筛选（按 id、含两端、单边界、无匹配、容量不足）、**未命名 id 渲染 `name:null`**、非有限值渲染 `null`、渲染括号平衡 |
 | `test_professional_finance` | ZIP 由 **Python 的 zipfile 写、由本代码读**（stored 与 deflate 两条路径）、**破坏 CRC 必须被拒绝**、缺 EOCD 被拒绝、定长表头/索引/数据起点逐字段断言、**字段取值按 `index` 与 `index×2` 设计**使偏移错位必然暴露、越界字段为缺失而非 0、成员结构错误的四种拒绝、只命名两个字段、**渲染行必须能被项目自己的 JSON 解析器解析**（这条抓出了两个真 bug） |
 | `test_daily` | **四类除数**的口径函数（股票/基金/债券/逆回购/未知码）、真实 `.day` 前缀（股票 + 债券）逐字段断言、**同一份字节两种口径比值恰好 100**（这就是参考实现会犯的那个 100 倍错）、月份 13 / 2 月 31 日拒绝而**真实闰日接受**、**拒绝时错误消息必须带上测试写的日期**（防"通过但没测到"）、零价格**只计数不拒绝**、非 32 倍数与容量不足拒绝、四种市场路径定位与短缓冲拒绝、渲染可被项目自己的解析器解析 |
+| `test_minute` | 日期字解码（含**字 0 不是日期**、最小合法字 101）、真实 `.lc1` 普通窗口逐字段断言与**股票尾字为 0**、**真实违规窗口仍能解析且恰好计 1 条**（违规记录本身完整返回，计数不是修正）、分钟字 ≥ 1440 拒绝而 1439（23:59）接受、月份 0 拒绝**且错误消息带上测试写的字**、NaN 价格拒绝、容量不足拒绝、扩展市场主动拒绝、渲染可被项目自己的解析器解析 |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -1896,10 +1960,10 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
-12. **`market/` 下其余在范围内的模块**：`daily` 已交付（见"本地日线"一节）；
-    按范围判定还剩 6 个可做——本地分钟线（`minute.cpp`/`local_kline.cpp`/
-    `minute_download*`）、`hyzt`（行业估值 JSN）、`panorama`、`ranking`、
-    `seal_order`（涨跌停规则 + 封单）、`valuation`。
+12. **`market/` 下其余在范围内的模块**：`daily` 与 `minute`（本地日线 / 分钟线）已交付；
+    按范围判定还剩 5 个可做——`hyzt`（行业估值 JSN）、`panorama`、`ranking`、
+    `seal_order`（涨跌停规则 + 封单）、`valuation`，以及
+    `minute_download*`（分钟线的下载与展开）。
 
 ### 性能：已测量，无余量
 

@@ -7,6 +7,7 @@
  *   watch       repeated sweeps with change detection, JSONL events on stdout
  *   day         replay one historical session from a zst_cache .img, JSONL
  *   daily       local .day daily bars for one security
+ *   minute      local .lc1 one-minute bars for one security
  *   trades      L1 trade details (minute resolution) for today or one date
  *   kline       multi-period K-lines (0x052D)
  *   timeline    today's intraday time-share series (0x0537)
@@ -39,6 +40,8 @@
 #include "tdx_convertible_json.h"
 #include "tdx_directory.h"
 #include "tdx_daily.h"
+#include "tdx_minute.h"
+#include "tdx_minute_json.h"
 #include "tdx_daily_json.h"
 #include "tdx_download.h"
 #include "tdx_finance.h"
@@ -3679,6 +3682,141 @@ done:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* minute                                                              */
+/* ------------------------------------------------------------------ */
+
+/* The local .lc1 one-minute bars.  No network, same shape as daily, and one difference
+ * worth remembering: these prices need NO scale, while .day's need one that varies by
+ * instrument.  The OHLC range is counted rather than enforced, because real files break
+ * it and the reference's check would refuse them. */
+static int command_minute(const cli_options *options, tdx_error *err) {
+    static tdx_buf raw;
+    static tdx_buf line;
+    tdx_lc1_bar *bars = NULL;
+    char path[TDX_LC1_PATH_MAX];
+    char security_id[24];
+    FILE *input = NULL;
+    FILE *stream = NULL;
+    long length;
+    size_t bar_count = 0;
+    size_t violations = 0;
+    size_t emitted = 0;
+    size_t index;
+    size_t distinct_dates = 0;
+    size_t first_date = 0;
+    size_t last_date = 0;
+    const char *code = NULL;
+    int market_id = -1;
+    int status = TDX_ERR;
+
+    if (options->security_count == 1) {
+        code = options->securities[0].code;
+        market_id = options->securities[0].market_id;
+    } else if (!options->input || !*options->input) {
+        tdx_error_set(err, "minute needs one --security CODE or an --input PATH");
+        return TDX_ERR;
+    }
+    if (options->input && *options->input) {
+        snprintf(path, sizeof(path), "%s", options->input);
+    } else if (tdx_lc1_locate(options->root, market_id, code, path, sizeof(path), err) !=
+               TDX_OK) {
+        return TDX_ERR;
+    }
+    if (code && market_id >= 0) {
+        const char *prefix = market_id == 0 ? "SZ" : market_id == 1 ? "SH" : "BJ";
+        snprintf(security_id, sizeof(security_id), "%s%s", prefix, code);
+    } else {
+        snprintf(security_id, sizeof(security_id), "%s", "");
+    }
+
+    tdx_buf_init(&raw);
+    tdx_buf_init(&line);
+    input = fopen(path, "rb");
+    if (!input) {
+        tdx_error_set(err, "cannot open %s", path);
+        goto done;
+    }
+    if (fseek(input, 0, SEEK_END) != 0 || (length = ftell(input)) < 0 ||
+        fseek(input, 0, SEEK_SET) != 0) {
+        tdx_error_set(err, "cannot size %s", path);
+        goto done;
+    }
+    if (length > 0) {
+        if (tdx_buf_reserve(&raw, (size_t)length, err) != TDX_OK)
+            goto done;
+        if (fread(raw.data, 1, (size_t)length, input) != (size_t)length) {
+            tdx_error_set(err, "cannot read %s", path);
+            goto done;
+        }
+        raw.len = (size_t)length;
+    }
+    fclose(input);
+    input = NULL;
+
+    bars = (tdx_lc1_bar *)calloc(TDX_LC1_BARS_MAX, sizeof(*bars));
+    if (!bars) {
+        tdx_error_set(err, "out of memory for the minute bars");
+        goto done;
+    }
+    if (tdx_lc1_parse(raw.data, raw.len, bars, TDX_LC1_BARS_MAX, &bar_count, &violations,
+                      err) != TDX_OK)
+        goto done;
+    for (index = 0; index < bar_count; ++index) {
+        if (index == 0 || bars[index].date != bars[index - 1].date)
+            distinct_dates++;
+        if (!first_date || bars[index].date < first_date)
+            first_date = bars[index].date;
+        if (bars[index].date > last_date)
+            last_date = bars[index].date;
+    }
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    tdx_buf_clear(&line);
+    if (tdx_lc1_format_summary(&line, path, security_id, raw.len, bar_count, violations,
+                               distinct_dates, first_date, last_date, err) != TDX_OK)
+        goto done;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+        fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the minute summary");
+        goto done;
+    }
+    for (index = 0; index < bar_count; ++index) {
+        if (options->max_records && emitted >= options->max_records)
+            break;
+        tdx_buf_clear(&line);
+        if (tdx_lc1_format_bar(&line, &bars[index], security_id, index, err) != TDX_OK)
+            goto done;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+            fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the minute bars");
+            goto done;
+        }
+        emitted++;
+    }
+    status = TDX_OK;
+    if (!options->quiet)
+        fprintf(stderr,
+                "minute %s: %zu bytes, %zu bars over %zu dates, %zu OHLC violations, "
+                "%zu emitted\n",
+                path, raw.len, bar_count, distinct_dates, violations, emitted);
+
+done:
+    if (input)
+        fclose(input);
+    if (stream && options->output)
+        fclose(stream);
+    free(bars);
+    tdx_buf_free(&raw);
+    tdx_buf_free(&line);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -3797,6 +3935,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "newbond") == 0) {
         if (command_newbond(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "minute") == 0) {
+        if (command_minute(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }
