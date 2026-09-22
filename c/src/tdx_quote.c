@@ -129,7 +129,14 @@ int tdx_price_divisor(const char *code) {
         const char *prefix;
         int divisor;
     } rules[] = {
-        {"10", 100}, {"11", 100},   {"12", 100},  {"204", 100}, {"1318", 100},
+        {"10", 100},  {"11", 100},   {"12", 100},  {"204", 100}, {"1318", 100},
+        /* Measured: the exchangeable-bond segment needs 100 like the other bond
+         * segments, and the table's lack of a "13" rule left it at 1 - a price 100
+         * times par.  Verified against the local day files: every 132xxx code that
+         * still trades came out at a ratio of about 100 while four control families
+         * came out at about 1.  Only "132" is added: the rest of the family has no
+         * live code here to measure, so widening it further would be a guess. */
+        {"132", 100},
         {"15", 10},  {"16", 10},    {"50", 10},   {"51", 10},   {"52", 10},
         {"53", 10},  {"56", 10},    {"58", 10},
     };

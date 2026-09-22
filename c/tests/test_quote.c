@@ -98,6 +98,14 @@ static void test_price_divisor(void) {
     CHECK(tdx_price_divisor("204001") == 100, "repo divisor");
     CHECK(tdx_price_divisor("131800") == 100, "1318 prefix divisor");
     CHECK(tdx_price_divisor("131801") == 100, "1318 prefix divisor, six digits");
+    /* Measured against the local day files: every 132xxx code that still trades
+     * decodes at about 100 times par without this rule, while four control families
+     * come out at a ratio of about 1.  The rule is "132", not "13": only that
+     * segment was measured, and the rest of the family has no live code here. */
+    CHECK(tdx_price_divisor("132024") == 100, "exchangeable bond divisor");
+    CHECK(tdx_price_divisor("132026") == 100, "and the other live one");
+    CHECK(tdx_price_divisor("130001") == 1,
+          "while the rest of the 13 family is left as measured-unknown");
     CHECK(tdx_price_divisor("130800") == 1, "unlisted prefix stays at one");
 }
 
