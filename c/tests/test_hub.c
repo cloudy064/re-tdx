@@ -47,7 +47,7 @@ static void make_depth(tdx_depth *depth, const tdx_code *code) {
 }
 
 static int feed_fetch(void *context, const size_t *indices, size_t count,
-                      tdx_depth *out, tdx_error *err) {
+                      tdx_depth *out, size_t *batches_out, tdx_error *err) {
     fake_feed *feed = (fake_feed *)context;
     size_t position;
 
@@ -73,6 +73,10 @@ static int feed_fetch(void *context, const size_t *indices, size_t count,
             feed->total_hand[slot] - feed->total_hand[slot] / 10;
     }
     feed->calls++;
+    /* One upstream request per ten securities: the test only needs a
+     * recognisable number, so the hub can be checked for reporting it. */
+    if (batches_out)
+        *batches_out = (count + 9) / 10;
     return TDX_OK;
 }
 
@@ -355,6 +359,17 @@ static void test_queue_overflow_drops_oldest(void) {
                   "expected eight dropped events in %s", text);
             CHECK(strstr(text, "\"universe\":8") != NULL, "status must report the universe");
             CHECK(strstr(text, "\"subscribers\":1") != NULL, "status subscriber count");
+            /* The hub must report the cost its fetcher reported: it decides how much
+             * work a round is, so the number of upstream requests that work became is
+             * its business, and a fetcher that cannot say must not be read as zero. */
+            CHECK(strstr(text, "\"last_round_batches\":") != NULL,
+                  "status must carry the last round's batch count: %s", text);
+            if (strstr(text, "\"last_round_batches\":") != NULL) {
+                const char *field = strstr(text, "\"last_round_batches\":");
+                CHECK(field != NULL && strncmp(field + strlen("\"last_round_batches\":"),
+                                               "0", 1) != 0,
+                      "and it must not be zero after a round that fetched: %s", field);
+            }
             free(text);
         }
     }

@@ -25,9 +25,16 @@ extern "C" {
 #define TDX_HUB_QUEUE_MAX 65536
 
 /* Asks for exactly the universe indices the poller decided are wanted and due.
- * out[i] must correspond to indices[i]. */
+ * out[i] must correspond to indices[i].
+ *
+ * batches_out reports how many upstream requests the work became.  The hub decides how
+ * much work there is, so the cost of that work belongs in the hub's status - without it
+ * there is no way to tell a round that needed one request from one that needed twenty.
+ * A fetcher that cannot say should write 0, which reads as "not reported" rather than
+ * as a claim of zero. */
 typedef int (*tdx_hub_fetch_fn)(void *context, const size_t *indices,
-                                size_t count, tdx_depth *out, tdx_error *err);
+                                size_t count, tdx_depth *out, size_t *batches_out,
+                                tdx_error *err);
 
 typedef struct tdx_hub_options {
     size_t max_subscribers;

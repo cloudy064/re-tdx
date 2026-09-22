@@ -1065,7 +1065,7 @@ typedef struct serve_fetch_context {
 
 /* Bridges the hub's fetch hook onto one parallel sweep round. */
 static int serve_fetch(void *context, const size_t *indices, size_t count,
-                       tdx_depth *out, tdx_error *err) {
+                       tdx_depth *out, size_t *batches_out, tdx_error *err) {
     serve_fetch_context *state = (serve_fetch_context *)context;
     tdx_sweep_stats stats;
     size_t index;
@@ -1082,9 +1082,15 @@ static int serve_fetch(void *context, const size_t *indices, size_t count,
     memset(&stats, 0, sizeof(stats));
     if (tdx_pool_run(state->pool, state->batch, count, out, count, &stats, err) !=
         TDX_OK) {
+        /* The batches a failed round managed to send still cost upstream, so they are
+         * reported rather than discarded. */
+        if (batches_out)
+            *batches_out = stats.batches;
         state->last = stats;
         return TDX_ERR;
     }
+    if (batches_out)
+        *batches_out = stats.batches;
     state->last = stats;
     return TDX_OK;
 }
@@ -1133,7 +1139,7 @@ static int command_serve(const cli_options *options, tdx_error *err) {
         goto done;
     tdx_serve_options_default(&serve_options);
     serve_options.port = options->port;
-    fprintf(stderr, "polling %zu securities every %d ms over %zu sessions\\n", count,
+    fprintf(stderr, "polling %zu securities every %d ms over %zu sessions\n", count,
             options->interval_ms, options->connections);
     if (tdx_serve_run(hub, codes, count, &serve_options, err) != TDX_OK)
         goto done;

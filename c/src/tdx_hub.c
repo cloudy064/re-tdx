@@ -47,6 +47,8 @@ struct tdx_hub {
 
     tdx_hub_fetch_fn fetch;
     void *fetch_context;
+    /* What the last round cost upstream, as the fetcher reported it. */
+    size_t last_fetch_batches;
 
     tdx_depth *records;
     tdx_state state;
@@ -335,7 +337,10 @@ static int hub_run_round(tdx_hub *hub, int force_all, int *stopped, tdx_error *e
     if (count == 0)
         return TDX_OK; /* nothing due in this tick */
 
-    result = hub->fetch(hub->fetch_context, hub->due, count, hub->records, err);
+    /* Cleared first, so a fetcher that fails cannot leave a stale count behind. */
+    hub->last_fetch_batches = 0;
+    result = hub->fetch(hub->fetch_context, hub->due, count, hub->records,
+                        &hub->last_fetch_batches, err);
 
     tdx_mutex_lock(&hub->lock);
     hub->last_round_ms = tdx_monotonic_ms() - started;
@@ -828,7 +833,8 @@ int tdx_hub_status_json(tdx_hub *hub, tdx_buf *out, tdx_error *err) {
                               "\"tier_warm\":%zu,\"tier_cold\":%zu,"
                               "\"heartbeat_ms\":%d,\"subscribers\":%zu,"
                               "\"subscriber_slots\":%zu,\"queued\":%zu,"
-                              "\"dropped\":%zu,\"sequence\":%lld,\"last_error\":",
+                              "\"dropped\":%zu,\"sequence\":%lld,"
+                              "\"last_round_batches\":%zu,\"last_error\":",
                               hub->universe_size, polled_now,
                               (unsigned long long)hub->rounds,
                               (unsigned long long)hub->failed_rounds,
@@ -839,7 +845,8 @@ int tdx_hub_status_json(tdx_hub *hub, tdx_buf *out, tdx_error *err) {
                               hub->demote_rounds, tier_hot, tier_warm, tier_cold,
                               hub->options.heartbeat_ms, hub->active_subscribers,
                               hub->subscriber_slots, pending, dropped,
-                              (long long)hub->next_sequence) != TDX_OK) {
+                              (long long)hub->next_sequence,
+                              hub->last_fetch_batches) != TDX_OK) {
         tdx_mutex_unlock(&hub->lock);
         return TDX_ERR;
     }
