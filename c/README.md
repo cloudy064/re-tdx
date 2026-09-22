@@ -61,6 +61,7 @@ c/
     tdx_pending_json.h     待发行的 JSONL 渲染
     tdx_subscription.h     申购事件与两个派生指标
     tdx_subscription_json.h 申购事件的 JSONL 渲染
+    tdx_bond_math.h        应计利息/现金流/贴现/YTM 求解
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -77,7 +78,7 @@ c/
     tdx_limits.c  tdx_limits_json.c  tdx_json.c  tdx_jsn.c
     tdx_bonds.c  tdx_bonds_json.c  tdx_convertible.c  tdx_convertible_json.c
     tdx_convertible_join.c  tdx_pending.c  tdx_pending_json.c
-    tdx_subscription.c  tdx_subscription_json.c
+    tdx_subscription.c  tdx_subscription_json.c  tdx_bond_math.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -97,6 +98,7 @@ c/
     test_convertible_join.c  (the same six fixtures, joined)
     test_pending.c   pending_fixtures.h (generated, reduced capture)
     test_subscription.c  subscription_fixtures.h (generated, reduced capture)
+    test_bond_math.c (calendar vs Python, closed form, fixed point, refusals)
 ```
 
 ## 构建
@@ -115,7 +117,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-25/25 测试通过、0 warning。
+26/26 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -1226,6 +1228,49 @@ SH605589 / SZ000422 / SZ002997）。若把它们当成同一份数据的不同�
 
 证据：`output/subscription_verification_evidence.txt`。
 
+## 债券定价算术（`tdx_bond_math`）
+
+定价视图读到行之后套用的招股书算术，参考实现逐条移植：
+
+```
+应计利息   IA = 面值 × 当期利率 × 已计息天数 / 365
+剩余现金流 每个剩余付息日一笔，最后一笔同时偿还面值
+贴现价值   Σ 金额 / (1 + 年利率)^年数
+到期收益率 对上面的贴现做二分（区间 [-0.999999, 10]，160 次）
+```
+
+时间口径全程 `days/365`，**不是**债券市场的 ACT/365 结算惯例——这是该表自己的规则，
+所以照抄而不去"改进"：改进就成了另一个数。
+
+### 这一层难得地能被外部事物检验，所以用了四种独立方式
+
+| 方式 | 内容 |
+|---|---|
+| **日历** | 日序数与 **Python 的 `datetime`**（不同算法）对照，含闰日与整百年 |
+| **闭式解** | 单笔现金流的收益率有解析答案 `(金额/价格)^(1/年数) − 1`，用它检验二分 |
+| **不动点** | 解出的收益率代回去贴现，必须还原给定价格——检验的是**答案**而非路径 |
+| **拒绝** | 每一处不成立都必须返回"缺失"，而不是一个看起来像数据的数 |
+
+### 两处最容易写错、因而单独断言的细节
+
+- 应计利息用剩余利率列表的**第一项**；在付息日当天是 **0**（是值，不是缺失）。
+- **最后一笔现金流同时偿还面值**：三笔 0.01/0.02/0.03 的票息 + 面值 100 → 最后一笔 **103.0**
+  而不是 3.0。漏掉这条会得到一个**悄悄偏高**的收益率。
+
+### 拒绝的边界是测出来的，不是假设的
+
+贴现的年利率恰为 −100% 或更低、现金流条数为 0、价格为 0 或负、无现金流 → 一律缺失。
+求解器的区间实测：高利率端 `100/11 = 9.0909`，低利率端（−99.9999%）可达 `1e8`，
+所以价格 `1.0` 被拒而 `1000` 可解——这两条边界都写进了测试。
+
+### 范围
+
+本模块只交付**算术层**。定价**行映射**与**报价联接**（定价资源与 `0x054C` 快照按
+市场+代码联接，再算全价 / 转股价值 / 溢价 / 纯债价值）尚未移植。
+定价资源本身：`bi/list/gxjty_zq_kzzsy101_1.jsn`，**1,265,167 字节 / 312 行**（活体实测）。
+
+证据：`output/bond_math_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1421,6 +1466,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_convertible_join` | 六份 fixture 的列数与源行数、**键并集为 3**（同一批债券在六份里，所以不是 18）与容量不足的拒绝、SH110076 六路全部命中、**三组触发条款取值必须互不相同**（一份文档读三遍会产出一模一样的触发条款）、票息列表条数 == 期数、只给一份文档/不给概览时仍能连接并把缺失报为缺失、**连接后渲染的括号平衡** |
 | `test_pending` | **16 列小写列名**的真实抓包前三行映射、两类中文取值精确比对、`gdpsl` 列存在但为空渲染为 `null` 而非 0、短代码/非数字市场**跳过并计数**（与上市视图"直接报错"相反）、容量不足的拒绝、集合对账的六种情形（顺序不同仍相等 / 两侧各有差异 / 重复身份折叠 / 空身份不算证券 / 空投影 / 两个空集）、渲染括号平衡 |
 | `test_subscription` | 两个派生指标在抓包数字上的取值、**除法保护**（转股价 0 / −0 / 无穷、转股价值 0 / 无穷、NULL 输出）、**16 列**真实抓包前三行的映射、三类中文名精确比对、事件 id 拼法与缺日期时的尾冒号、债券或正股身份任一不可读即**跳过并计数**、身份齐全但输入全空时事件仍成立且两个指标**缺失而非 0**、渲染括号平衡 |
+| `test_bond_math` | **日序数与 Python datetime 对照**（含闰日、整百年、跨年、带连字符）、日期非法/短/空/NULL 的拒绝、CSV 文本与数值解析（跳过非数字与空项、容量不足截断）、应计利息取**第一项**利率与付息日当天为 0、期外拒绝、**最后一笔同时偿还面值**（103 而非 3）、现金流按时间升序、**单笔现金流的闭式解**、**贴现回代的不动点**、利率 ≤ −100%、空现金流、零/负价格、**区间夹不住的价格**的拒绝 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1429,9 +1475,9 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **可转债的定价视图与新债投影对账**：六文档连接、换股替换/投影兜底、待发计划表、
-   申购（含派生指标）都已就位；`gxjty_zq_kzzsy101`（定价）与 `gxjty_zq_xkzz102`
-   （新债投影与申购的匹配报告）尚未移植。
+6. **可转债定价视图的行映射与报价联接**：算术层（应计利息/现金流/贴现/YTM）已就位；
+   定价资源与 `0x054C` 快照的联接、以及全价/转股价值/溢价/纯债价值的组装尚未移植。
+   另有 `gxjty_zq_xkzz102`（新债投影与申购的匹配报告）未做。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi
