@@ -12,6 +12,7 @@
  *   limit       the price-limit rules from hqrule.dat, and one security's limits
  *   valuation   index valuation: the current table and its PE/PB history
  *   ranking     the category ranking over 0x054B, paged
+ *   seal        the sealed-order figure for one security, from its 0x0547 depth
  *   trades      L1 trade details (minute resolution) for today or one date
  *   kline       multi-period K-lines (0x052D)
  *   timeline    today's intraday time-share series (0x0537)
@@ -73,6 +74,8 @@
 #include "tdx_limits_json.h"
 #include "tdx_snapshot.h"
 #include "tdx_ranking.h"
+#include "tdx_seal.h"
+#include "tdx_seal_json.h"
 #include "tdx_ranking_json.h"
 #include "tdx_snapshot_json.h"
 #include "tdx_format.h"
@@ -4421,6 +4424,121 @@ done:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* seal                                                                */
+/* ------------------------------------------------------------------ */
+
+/* The sealed-order figure: one 0x0547 depth record, the limit rules the terminal keeps, and
+ * the arithmetic that says whether the security is sealed and for how much. */
+static int command_seal(const cli_options *options, tdx_error *err) {
+    static tdx_buf line;
+    static tdx_buf request;
+    static tdx_buf response;
+    tdx_depth depth;
+    tdx_limit_rules rules;
+    tdx_limit_prices limits;
+    tdx_seal_input input;
+    tdx_seal_result seal;
+    tdx_connection connection;
+    FILE *stream = NULL;
+    char endpoint[80];
+    char as_of[16];
+    int status = TDX_ERR;
+
+    if (options->security_count != 1) {
+        tdx_error_set(err, "seal needs exactly one --security CODE");
+        return TDX_ERR;
+    }
+    {
+        time_t now = time(NULL);
+        struct tm local;
+        memset(&local, 0, sizeof(local));
+#ifdef _WIN32
+        localtime_s(&local, &now);
+#else
+        localtime_r(&now, &local);
+#endif
+        if (options->date && *options->date)
+            snprintf(as_of, sizeof(as_of), "%s", options->date);
+        else
+            snprintf(as_of, sizeof(as_of), "%04d%02d%02d", local.tm_year + 1900,
+                     local.tm_mon + 1, local.tm_mday);
+    }
+    if (tdx_limit_rules_load(options->root, &rules, err) != TDX_OK)
+        return TDX_ERR;
+
+    tdx_buf_init(&line);
+    tdx_buf_init(&request);
+    tdx_buf_init(&response);
+    memset(&depth, 0, sizeof(depth));
+    memset(endpoint, 0, sizeof(endpoint));
+    memset(&connection, 0, sizeof(connection));
+    connection.socket_handle = (intptr_t)-1;
+    if (tdx_connection_open(&connection, &options->pool.items[0], options->timeout_ms, err) !=
+        TDX_OK)
+        goto done;
+    tdx_endpoint_address(&options->pool.items[0], endpoint, sizeof(endpoint));
+    if (tdx_quote_build_depth_request(options->securities, 1, &request, err) != TDX_OK)
+        goto close_connection;
+    if (tdx_connection_call(&connection, TDX_CMD_DEPTH, request.data, request.len, &response,
+                            err) != TDX_OK)
+        goto close_connection;
+    {
+        size_t parsed = 0;
+        if (tdx_quote_parse_depth_response(response.data, response.len, options->securities, 1,
+                                           &depth, 1, &parsed, err) != TDX_OK)
+            goto close_connection;
+        if (parsed != 1) {
+            tdx_error_set(err, "the depth reply holds %zu records for one request", parsed);
+            goto close_connection;
+        }
+    }
+
+    /* The security name is not needed: the limit rules only use a name to recognise special
+     * treatment, and the depth record does not carry one. */
+    if (!tdx_limit_calculate(options->securities[0].market_id, options->securities[0].code, "",
+                             depth.previous, atoi(as_of), &rules, &limits)) {
+        tdx_error_set(err, "%s is not price limited", options->securities[0].code);
+        goto close_connection;
+    }
+    tdx_seal_input_from_depth(&depth, &input);
+    if (!tdx_seal_calculate(&input, &limits, &seal)) {
+        tdx_error_set(err, "the seal is not available for %s", options->securities[0].code);
+        goto close_connection;
+    }
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto close_connection;
+    }
+    if (tdx_seal_format(&line, &options->securities[0], &limits, &seal, &input, as_of,
+                        err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+        fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the seal");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+close_connection:
+    tdx_connection_close(&connection);
+    if (status == TDX_OK && !options->quiet)
+        fprintf(stderr, "seal %s: direction %d mode %s amount %.2f\n",
+                options->securities[0].code, seal.direction,
+                seal.mode ? seal.mode : "not-sealed", seal.amount_yuan);
+done:
+    tdx_buf_free(&line);
+    tdx_buf_free(&request);
+    tdx_buf_free(&response);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -4539,6 +4657,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "newbond") == 0) {
         if (command_newbond(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "seal") == 0) {
+        if (command_seal(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

@@ -81,6 +81,8 @@ c/
     tdx_valuation_json.h   指数/历史点/合并报告/基金的 JSONL 渲染
     tdx_ranking.h          0x054B 分类行情排名（价格是相对收盘的差值）
     tdx_ranking_json.h     排名行与汇总的 JSONL 渲染
+    tdx_seal.h             封单量/封单比（三条路径，金额带符号）
+    tdx_seal_json.h        封单结果与其输入的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -103,7 +105,7 @@ c/
     tdx_professional_finance.c  tdx_zip.c  tdx_daily.c  tdx_daily_json.c
     tdx_minute.c  tdx_minute_json.c  tdx_industry.c  tdx_industry_json.c
     tdx_limit.c  tdx_valuation.c  tdx_valuation_json.c
-    tdx_ranking.c  tdx_ranking_json.c
+    tdx_ranking.c  tdx_ranking_json.c  tdx_seal.c  tdx_seal_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -134,6 +136,7 @@ c/
     test_limit.c (the real hqrule.dat, inline, and the rounding arithmetic)
     test_valuation.c  valuation_fixtures.h (generated, master whole)
     test_ranking.c (a response built by the test, its varints computed)
+    test_seal.c (the three seal paths, built from inputs)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
 ```
@@ -154,7 +157,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-36/36 测试通过、0 warning。
+37/37 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -224,6 +227,10 @@ tdx-l1stream valuation --security sh000001 `
 # 分类行情排名（0x054B）：按涨幅降序，服务端分页
 tdx-l1stream ranking --sort change-pct --limit 100 `
                     --output output\ranking.jsonl
+
+# 封单：一只证券的涨跌停价与封单量/封单比
+tdx-l1stream seal --security sz000504 --root C:\new_tdx `
+                 --output output\seal-000504.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -1966,6 +1973,75 @@ points 3093，both_sides 3093，pe_only 0，pb_only 0，complete true
 
 证据：`output/ranking_verification_evidence.txt`。
 
+## 封单：`seal`（`0x0547` 盘口 + 涨跌停规则）
+
+一只证券是否**被封在板上**、封了多少。三条路径：
+
+| 模式 | 情形 | 封单手数 |
+|---|---|---|
+| `auction-imbalance` | 开盘前**无现价**、两侧在同一价位 | **竞价不平衡量** |
+| `auction-second-level` | 同样是交叉价，但**只有二档有量** | 二档量，且**一档量并入分母** |
+| `continuous` | 盘中现价即限价，且**对手方一档不存在** | 一档量 |
+
+### "封住"的定义是**对手方一档不存在**，不是价格接近限价
+
+这条最值得写下来：**两侧都有挂单就不是封板，无论价格离限价多近**。测试对此**专门断言**——
+把现价设成恰好等于涨停价、同时给卖一挂上量，结果必须是 `not-sealed`。
+
+### 金额与封单比**带符号**
+
+涨停为正、跌停为负，所以调用方可以**直接按封单额排序**而不必先问方向。
+分母是成交量（`auction-second-level` 时再加上一档量）——那部分量也是"封单相对什么而言"的一部分。
+
+### 对真实盘口的验证
+
+走查 **96 只证券**的 0x0547 盘口：**1 只被封住**，95 只未封住。对每一个"被封住"的**重新独立推导**三件事：
+
+| 检验 | 结果 |
+|---|---|
+| ① 现价是否真的等于它声称的那个限价 | **0 处不符** |
+| ② 金额是否真的等于 价 × 封单手数 × 每手股数 | **0 处不符** |
+| ③ 封单比是否真的等于 封单手数 / 分母 | **0 处不符** |
+
+那一只是 **`000504`，continuous 涨停**：
+
+| 现价 | 上限 | 封单手数 | 封单金额 | 封单比 |
+|---:|---:|---:|---:|---:|
+| 12.1100 | **12.1100** | 410,742 | **497,408,562 元** | **7.36** |
+
+封单比 7.36 意味着封单量是当日成交量的 7.36 倍——强封板，数值合理；而现价与上限**完全相同**，
+说明"在板上"这件事本身被独立确认了。
+
+### 格式里一个反直觉之处（测试纠正了我的预期）
+
+`auction-second-level` 分支的条件是**二档的【价格】不存在、而【量】存在**：
+
+```c
+!present(bid2.price) && !present(ask2.price)   /* 价格缺席 */
+if (bid2.volume_hand && ...)                   /* 量却在 */
+```
+
+也就是说**竞价盘口会把"量有、价无"的二档报出来**。我第一版测试给二档设了价格，于是整条分支
+不成立、10 条断言失败——**实现是对的，错的是我的预期**。修好之后我把"给二档设价格会跳出这条分支"
+**变成了显式断言**。
+
+同一轮里我另外两处预期也写错了：
+
+- 封单比 `410742 / 55812 = 7.3594`，而我填的是**活体记录里另一个分母**算出的 7.3579；
+- 拒绝状态掩码 `(flags & 0x3C) == 0x1C` **保留四位再比较**，所以 `0x3C & 0x3C = 0x3C` **不是**拒绝状态，
+  而 `0x5C` 是——我原以为"任何拒绝标志都算"。
+
+### 活体未覆盖的部分
+
+活体取样只命中 `continuous` 与 `not-sealed`；`auction-imbalance` 与 `auction-second-level`
+由测试用**构造输入**覆盖（它们只出现在开盘前那几分钟）。
+
+### 未做的部分
+
+参考实现另有 `all_sealed` 多页扫描（按封单额排序翻十页）与板块聚合，属于**服务形态**而非计算层。
+
+证据：`output/seal_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -2184,6 +2260,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_limit` | **真实 hqrule.dat 的字节**（`[节名]` + 裸 `key=value`、注释、空行）、切换日 99991231 与默认值 0 的差别（**同一只 ST 股两种规则各算一次**）、三个板块的费率、**三步取整与 0.503 偏置**（需要进位的值上断言）、**北交所截断与主板四舍五入在同一个值上不相等**、非限价品种/无前收/`N` 开头新股的拒绝、规则表为 NULL 时回落到默认 |
 | `test_valuation` | **整份主表**（11 行全断言）、标签按 **UTF-8 字节精确比对**（只查"非空"会放过乱码）、四个收益字段、每行都带明细 id、**真实 PE/PB 前缀按日期合并**（20 点全部两侧都有、值来自两个资源、升序）、合成行覆盖 **pe_only / pb_only / 输入乱序 / 单侧缺失**、基金字段（净值/溢价/规模/类型）、**四个渲染器全部断言可解析**（漏掉的那个正是出错的） |
 | `test_ranking` | 请求体 9 个字段**逐个断言**（含 `reverse` 的 0/1/2 三态，**降序是默认而非标志**）、页大小 1..80 的拒绝、排序键表（名称/大小写/十进制/十六进制/未知名）、分类拼写（`a-shares`/`a_share`/数字）、**由测试构造的报文**（varint 由辅助函数按数值生成，不手写）断言**前收高于现价的下跌情形**、买卖一价同样是差值、负的涨速/开盘抢筹、两段未建模字节按 hex、拒绝：超 80 条、**尾部多余字节**、市场越界、代码非数字、尾部截断、容量不足、渲染可被项目自己的解析器解析 |
+| `test_seal` | 三条路径**各自构造**（活体只在盘中命中其中一条）：**连续涨停**（现价==上限且卖一不存在 ⇒ 封单=买一量、金额 497,408,562、比值 7.359385）、**跌停方向**（金额与比值**为负**）、**两侧都有挂单即使现价恰在限价也不封**、竞价不平衡（无现价、两侧交叉，比值为 null 而非 0）、**竞价二档**（二档**价缺席而量存在**、一档量并入分母；**给二档设价格即跳出该分支**）、拒绝状态掩码 `0x3C`**不是**、`0x5C`**是**、限价不可用/每手为 0/无成交时各字段的可用性、渲染可被项目自己的解析器解析且输入随结果一起输出 |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -2230,9 +2307,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
 12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt`、`valuation`、`ranking`、
-    以及 `seal_order` 的**涨跌停规则半边**已交付；还剩——`panorama`、
-    `minute_download*`（分钟线的下载与展开），以及 `seal_order` 的**封单量/封单比**半边
-    （需要五档盘口与竞价不平衡量）。
+    以及 `seal_order` **整个模块**（涨跌停规则 + 封单量/封单比）已交付；
+    还剩——`panorama` 与 `minute_download*`（分钟线的下载与展开）。
 13. **板块层级展开**：`hyzt` 之上还有一层父子板块/成员并集/层级树，依赖
     `tdx/blocks.hpp` 与一路 cloud 数据源；**其范围归属尚未判定**。
 
