@@ -96,3 +96,7 @@ Windows MinGW/MSVC 的前 50 项 CTest 通过，最后一项生成一致性检�
 保留真实压缩、CRC 损坏和缺失 EOCD 的测试覆盖。Python 3.9/zlib 与 Windows Python 3.14.4/zlib-ng 的生成文件逐字节一致，
 deflate ZIP 均为 1179 字节；21 个产物与 35 个输入的生成检查无漂移，MinGW 财务包、生成和 CLI 契约 3/3 通过。
 PR 的远端检查状态以 [PR #2](https://github.com/cloudy064/re-tdx/pull/2) 为准。
+
+ZIP 修复后的 push 检查已通过 MSVC，PR 检查的 MinGW 也通过；但同一提交的 PR/MSVC 构建另遇到
+vcpkg `z-applocal` 并行复制共享 `zd.dll` 的文件占用错误。CI 已通过 PATH 指定 vcpkg DLL 目录，
+因此仅在该 CI 配置关闭重复的 `VCPKG_APPLOCAL_DEPS` 复制，不改变测试覆盖或开发者默认构建行为。
