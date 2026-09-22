@@ -47,7 +47,8 @@ typedef struct tdx_response_header {
     uint16_t decoded_size;
 } tdx_response_header;
 
-/* Encodes one request frame with the given message id. */
+/* Encodes one request frame with the given message id.  out must be initialized;
+ * its allocation is reused.  On failure out is empty.  body must not alias out. */
 int tdx_frame_build_request(uint32_t message_id, uint16_t message_type,
                             const void *body, size_t body_size, uint8_t prefix,
                             tdx_buf *out, tdx_error *err);
@@ -57,7 +58,8 @@ int tdx_frame_decode_header(const uint8_t header[TDX_RESPONSE_HEADER_SIZE],
                             tdx_response_header *out, tdx_error *err);
 
 /* Expands a response body.  When wire_size == decoded_size the bytes are
- * copied verbatim; otherwise they are inflated with zlib. */
+ * copied verbatim; otherwise they are inflated with zlib.  out must be initialized;
+ * its allocation is reused and is empty on failure.  wire must not alias out. */
 int tdx_frame_decode_body(const uint8_t *wire, size_t wire_size,
                           size_t decoded_size, tdx_buf *out, tdx_error *err);
 

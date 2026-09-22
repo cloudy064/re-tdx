@@ -142,7 +142,8 @@ int tdx_buf_append_printf(tdx_buf *buf, tdx_error *err, const char *format, ...)
         va_end(args);
         return tdx_buf_append(buf, stack, (size_t)needed, err);
     }
-    if (tdx_buf_reserve(buf, (size_t)needed, err) != TDX_OK) {
+    /* vsnprintf writes a terminator in addition to the counted text. */
+    if (tdx_buf_reserve(buf, (size_t)needed + 1u, err) != TDX_OK) {
         va_end(args);
         return TDX_ERR;
     }

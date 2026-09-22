@@ -1,0 +1,79 @@
+server 广州双线主站2 | 3 securities
+0x054C request (31 bytes): 05 00 00 00 00 00 00 00 03 00 00 30 30 30 36 32 33 00 30 30 30 30 30 31 01 36 30 30 30 30 30
+0x054C reply 309 bytes, header_raw=0, declared=3
+C fixture (309 bytes):
+
+    0x00, 0x00, 0x03, 0x00, 0x00, 0x30, 0x30, 0x30, 0x36, 0x32, 0x33, 0xdf, 0x0a, 0xaf,
+    0x1b, 0x53, 0x54, 0x03, 0x56, 0xa2, 0xc4, 0xce, 0x0e, 0xef, 0x1b, 0x9d, 0xd5, 0x0a,
+    0x89, 0x11, 0x48, 0x23, 0x13, 0x4d, 0xb8, 0xce, 0x04, 0xa5, 0x86, 0x06, 0x00, 0x9e,
+    0xae, 0x02, 0x00, 0x01, 0xa1, 0x05, 0x25, 0xd6, 0x00, 0xfb, 0xff, 0x03, 0x00, 0x00,
+    0xb1, 0xed, 0x49, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xea, 0x1d, 0x9e, 0x3f, 0x46, 0x3a, 0x7f, 0xc2, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0xdf, 0x0a, 0x00, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31,
+    0xbe, 0x11, 0x95, 0x12, 0x43, 0x43, 0x00, 0x4d, 0xbc, 0xcd, 0xce, 0x0e, 0xd5, 0x12,
+    0x93, 0xe6, 0x63, 0xa0, 0x75, 0xd0, 0x7e, 0x63, 0x4e, 0xa1, 0xfd, 0x2d, 0xb2, 0xe8,
+    0x35, 0x00, 0xbe, 0x9a, 0x03, 0x00, 0x01, 0xa7, 0x5b, 0xa5, 0x23, 0xd6, 0x07, 0x00,
+    0x00, 0x02, 0x00, 0x00, 0x99, 0x06, 0x4b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0xa5, 0x74, 0x3f, 0xf5, 0xe8, 0xef, 0x40, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xbe, 0x11, 0x01, 0x36, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0x88, 0x10, 0x85, 0x0e, 0x06, 0x03, 0x05, 0x4a, 0x88, 0xcd,
+    0xcb, 0x0e, 0xc5, 0x0e, 0xb6, 0xb9, 0x50, 0xac, 0x5a, 0xe4, 0x7f, 0x0d, 0x4e, 0x87,
+    0xc5, 0x2c, 0xaf, 0xf4, 0x23, 0x00, 0xbe, 0xfd, 0x01, 0x00, 0x01, 0xac, 0x72, 0x93,
+    0x43, 0x16, 0x08, 0x00, 0x00, 0x01, 0x00, 0x00, 0x97, 0x9f, 0x4a, 0xf6, 0xff, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd6, 0x1c, 0x48, 0x3f, 0xbe,
+    0x7a, 0x5f, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88,
+    0x10,
+0x054C parsed 3 records
+  [0] m0 000623 active=2783 last=17.7500 prev=17.5600 open=17.5500 high=17.7800 low=17.5300
+      time=15323426 amount=154285184.00 total=87389 current=1097 inside=37816 outside=49573 imbalance=0 open_amount=1935800.00 tail=61
+  [1] m0 000001 active=4542 last=11.7300 prev=11.7000 open=11.7000 high=11.7300 low=11.6000
+      time=15324028 amount=954184704.00 total=817555 current=7520 inside=376673 outside=440882 imbalance=0 open_amount=2630200.00 tail=62
+  [2] m1 600000 active=4232 last=9.0100 prev=9.0700 open=9.0400 high=9.0600 low=8.9100
+      time=15299400 amount=593492224.00 total=659062 current=5804 inside=364871 outside=294191 imbalance=0 open_amount=1625400.00 tail=62
+
+0x0547 reply 353 bytes (117.7 bytes/record) vs 0x054C 103.0 bytes/record
+0x0547 parsed 3 records
+
+security   field                                        0x054C vs 0x0547
+sz000623   last                                         MATCH (17.7500 / 17.7500)
+           previous                                     MATCH (17.5600 / 17.5600)
+           open                                         MATCH (17.5500 / 17.5500)
+           high                                         MATCH (17.7800 / 17.7800)
+           low                                          MATCH (17.5300 / 17.5300)
+           amount                                       MATCH (154285184.0000 / 154285184.0000)
+           total_hand                                   MATCH (87389.0000 / 87389.0000)
+           current_hand                                 MATCH (1097.0000 / 1097.0000)
+           inside                                       MATCH (37816.0000 / 37816.0000)
+           outside                                      MATCH (49573.0000 / 49573.0000)
+           imbalance                                    MATCH (0.0000 / 0.0000)
+           open_amount                                  DIFF (1935800.0000 / 1935770.0000)
+           undecoded_tail_bytes                         DIFF (61.0000 / 46.0000)
+sz000001   last                                         MATCH (11.7300 / 11.7300)
+           previous                                     MATCH (11.7000 / 11.7000)
+           open                                         MATCH (11.7000 / 11.7000)
+           high                                         MATCH (11.7300 / 11.7300)
+           low                                          MATCH (11.6000 / 11.6000)
+           amount                                       MATCH (954184704.0000 / 954184704.0000)
+           total_hand                                   MATCH (817555.0000 / 817555.0000)
+           current_hand                                 MATCH (7520.0000 / 7520.0000)
+           inside                                       MATCH (376673.0000 / 376673.0000)
+           outside                                      MATCH (440882.0000 / 440882.0000)
+           imbalance                                    MATCH (0.0000 / 0.0000)
+           open_amount                                  DIFF (2630200.0000 / 2630160.0000)
+           undecoded_tail_bytes                         DIFF (62.0000 / 46.0000)
+sh600000   last                                         MATCH (9.0100 / 9.0100)
+           previous                                     MATCH (9.0700 / 9.0700)
+           open                                         MATCH (9.0400 / 9.0400)
+           high                                         MATCH (9.0600 / 9.0600)
+           low                                          MATCH (8.9100 / 8.9100)
+           amount                                       MATCH (593492224.0000 / 593492224.0000)
+           total_hand                                   MATCH (659062.0000 / 659062.0000)
+           current_hand                                 MATCH (5804.0000 / 5804.0000)
+           inside                                       MATCH (364871.0000 / 364871.0000)
+           outside                                      MATCH (294191.0000 / 294191.0000)
+           imbalance                                    MATCH (0.0000 / 0.0000)
+           open_amount                                  DIFF (1625400.0000 / 1625390.0000)
+           undecoded_tail_bytes                         DIFF (62.0000 / 46.0000)

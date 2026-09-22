@@ -38,7 +38,7 @@ static void expect_bytes(const char *label, const tdx_buf *buffer, const uint8_t
 }
 
 static void test_request_without_body(void) {
-    tdx_buf buffer;
+    tdx_buf buffer = {0};
     tdx_error error;
     /* 0x0C | message id | control | length x2 | command */
     const uint8_t want[] = {0x0C, 0x01, 0x08, 0x64, 0x01, 0x01,
@@ -52,7 +52,7 @@ static void test_request_without_body(void) {
 }
 
 static void test_request_with_body(void) {
-    tdx_buf buffer;
+    tdx_buf buffer = {0};
     tdx_error error;
     const uint8_t body[] = {0x9A, 0x1C};
     const uint8_t want[] = {0x0C, 0x00, 0x00, 0x00, 0x00, 0x01,
@@ -66,7 +66,7 @@ static void test_request_with_body(void) {
 }
 
 static void test_request_rejects_bad_prefix(void) {
-    tdx_buf buffer;
+    tdx_buf buffer = {0};
     tdx_error error;
     error.message[0] = '\0';
     CHECK(tdx_frame_build_request(1, TDX_CMD_DEPTH, NULL, 0, 0x7F, &buffer,
@@ -101,7 +101,7 @@ static void test_header_rejects_bad_prefix(void) {
 
 static void test_body_passthrough(void) {
     const uint8_t wire[] = {1, 2, 3, 4};
-    tdx_buf out;
+    tdx_buf out = {0};
     tdx_error error;
     error.message[0] = '\0';
     CHECK(tdx_frame_decode_body(wire, sizeof(wire), sizeof(wire), &out, &error) == TDX_OK,
@@ -115,7 +115,7 @@ static void test_body_inflate(void) {
     const char *expected = "7709 quote body, inflated through the frame decoder";
     uint8_t compressed[256];
     uLongf compressed_size = sizeof(compressed);
-    tdx_buf out;
+    tdx_buf out = {0};
     tdx_error error;
 
     error.message[0] = '\0';
@@ -136,11 +136,49 @@ static void test_body_inflate(void) {
 
 static void test_body_rejects_corrupt_stream(void) {
     const uint8_t corrupt[] = {0x78, 0x9C, 0x11, 0x22, 0x33, 0x44, 0x55};
-    tdx_buf out;
+    tdx_buf out = {0};
     tdx_error error;
     error.message[0] = '\0';
     CHECK(tdx_frame_decode_body(corrupt, sizeof(corrupt), 64, &out, &error) == TDX_ERR,
           "a corrupt zlib stream must be rejected");
+    tdx_buf_free(&out);
+}
+
+static void test_reuse_and_limits(void) {
+    const uint8_t wire[] = {1, 2, 3, 4};
+    tdx_buf out = {0};
+    tdx_error error = {{0}};
+    uint8_t *allocation;
+    uint8_t compressed[64];
+    uLongf compressed_size = sizeof(compressed) - 1;
+    size_t index;
+    CHECK(tdx_buf_reserve(&out, 4096, &error) == TDX_OK, "reserve reusable output");
+    allocation = out.data;
+    for (index = 0; index < 100; ++index) {
+        CHECK(tdx_frame_decode_body(wire, sizeof(wire), sizeof(wire), &out, &error) == TDX_OK,
+              "repeated body decode");
+        CHECK(out.data == allocation && out.len == sizeof(wire), "decode reuses storage");
+        CHECK(tdx_frame_build_request(1, TDX_CMD_DEPTH, wire, sizeof(wire),
+                                     TDX_REQUEST_PREFIX, &out, &error) == TDX_OK,
+              "repeated request build");
+        CHECK(out.data == allocation && out.len == 16, "request reuses storage");
+    }
+    CHECK(tdx_frame_build_request(1, TDX_CMD_DEPTH, wire, SIZE_MAX,
+                                 TDX_REQUEST_PREFIX, &out, &error) == TDX_ERR,
+          "overflow-sized request is refused before reading its body");
+    CHECK(out.len == 0 && out.data == allocation, "failure clears length and preserves owner");
+    CHECK(tdx_frame_decode_body(wire, UINT16_MAX + (size_t)1, 4, &out, &error) == TDX_ERR,
+          "wire length cannot exceed frame field");
+    CHECK(tdx_frame_decode_body(wire, 4, UINT16_MAX + (size_t)1, &out, &error) == TDX_ERR,
+          "decoded length cannot exceed frame field");
+    CHECK(tdx_frame_decode_body(wire, 4, 0, &out, &error) == TDX_ERR,
+          "nonempty invalid compressed input is not ignored for an empty result");
+    CHECK(compress(compressed, &compressed_size, wire, sizeof(wire)) == Z_OK, "compress");
+    compressed[compressed_size++] = 0;
+    CHECK(tdx_frame_decode_body(compressed, compressed_size, sizeof(wire), &out, &error) == TDX_ERR,
+          "compressed input must be consumed entirely");
+    CHECK(out.len == 0, "all failures leave empty output");
+    tdx_buf_free(&out);
 }
 
 int main(void) {
@@ -152,6 +190,7 @@ int main(void) {
     test_body_passthrough();
     test_body_inflate();
     test_body_rejects_corrupt_stream();
+    test_reuse_and_limits();
     if (failures) {
         printf("%d frame check(s) failed\n", failures);
         return 1;

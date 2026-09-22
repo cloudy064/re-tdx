@@ -1,0 +1,22 @@
+server 广州双线主站2
+request (14 bytes): 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+first page: 15 bytes = 2 + 1 * 13
+C fixture (first page, 15 bytes):
+
+    0x01, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x52, 0xb8, 0xde, 0x3f, 0x8f, 0xc2, 0xb5,
+    0x3f,
+walked the list: 1 records, next index would be 1
+
+first three:
+  0000010  up=1.7400 down=1.4200  up/down=1.2254
+last three:
+  0000010  up=1.7400 down=1.4200
+
+implied band from 0x054C's previous close (members first):
+  000010   prev=1.5800    up_band=+0.1013 down_band=+0.1013  ON the 0x0452 list
+  000001   prev=11.7000   up_band=+0.1000 down_band=+0.1000  not on the list
+  600519   prev=1257.1200 up_band=+0.1000 down_band=+0.1000  not on the list
+  000002   prev=3.3200    up_band=+0.1000 down_band=+0.1000  not on the list
+  601398   prev=8.0700    up_band=+0.1000 down_band=+0.1000  not on the list
+
+up/down ratio across the list: ~1.1055 (5% band) 0, ~1.2222 (10% band) 0, other 1

@@ -1,0 +1,277 @@
+{
+  "auction_probe_evidence.txt": {
+    "origin": "output\\auction_probe_evidence.txt",
+    "sha256": "da94fb0cf6690ad9dfab91ee0b864a8ee8d0bf36cfbd1bb52925a9b83d838342",
+    "bytes": 20334
+  },
+  "capital_probe_evidence.txt": {
+    "origin": "output\\capital_probe_evidence.txt",
+    "sha256": "da5d4de9780f84b84f6362a22bd673fda31a252faf21182656ad2a35e8640f1f",
+    "bytes": 33950
+  },
+  "finance_probe_evidence.txt": {
+    "origin": "output\\finance_probe_evidence.txt",
+    "sha256": "0f58c9c1f04eb36f8a745bfc763d9a716653a69b47e1f822c3c4fb7312555b69",
+    "bytes": 9469
+  },
+  "gbbq_probe_evidence.txt": {
+    "origin": "output\\gbbq_probe_evidence.txt",
+    "sha256": "1f11f5510d909b5e4373980dff345eb8c8147bc960982aa750f2b20899427a03",
+    "bytes": 12052
+  },
+  "jsn_probe_evidence.txt": {
+    "origin": "output\\jsn_probe_evidence.txt",
+    "sha256": "d98bca7cb44e32d54d45cd97b71cfdc9a51ad0f7e922cd5b644b050a25db8f43",
+    "bytes": 45047
+  },
+  "kline_probe_evidence.txt": {
+    "origin": "output\\kline_probe_evidence.txt",
+    "sha256": "a819164acc8a6f5ea677c690818c1043991304f18bd9ce78bb5fdd43581f8185",
+    "bytes": 5484
+  },
+  "limits_probe_evidence.txt": {
+    "origin": "output\\limits_probe_evidence.txt",
+    "sha256": "a0329a64625b5ba798cd43673c2e28f51510e3437afd79595eae4c231b0a44ed",
+    "bytes": 967
+  },
+  "snapshot_probe_evidence.txt": {
+    "origin": "output\\snapshot_probe_evidence.txt",
+    "sha256": "8013350a7579efb10ad3a600a7b64cb517724f7667254da8b33b5d7b0ff799aa",
+    "bytes": 6464
+  },
+  "timeline_0537_reply.bin": {
+    "origin": "output\\timeline_0537_reply.bin",
+    "sha256": "6e3e42463a72cb081c5040fca20a257d8d3ef4eb590ad76240419ce2d5271346",
+    "bytes": 1173
+  },
+  "pricing_primary.gbk": {
+    "origin": "output/pricing_primary.gbk",
+    "sha256": "581a1401d067310927bbeb02be5a9bf312a54136fa0d9c841903ca7ffbe88cdd",
+    "bytes": 11892,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 1265172,
+    "source_rows": 312,
+    "source_md5": "e3bbf32e7afb2a14e09fc84802c9d5cc",
+    "source_sha256": "60252035326bb88490c35aa779f9a15f106c4418b9a9dfecb675e33181f7fc53"
+  },
+  "pending_primary.gbk": {
+    "origin": "output/pending_primary.gbk",
+    "sha256": "eb09308f33dba3bda036af56589d396f44f1f96031c837d6a3018fbc1be60471",
+    "bytes": 482,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 18597,
+    "source_rows": 153,
+    "source_md5": "c2df9c63712e1e6331d8f3b0ed647440",
+    "source_sha256": "b867c840822ffd3484bb6cb6d6230682948e7058e9c0982b82d450c26b35beea"
+  },
+  "hyzt.gbk": {
+    "origin": "output/hyzt.gbk",
+    "sha256": "a9ab26fa304d2d69b57abfb683df438fa157facf43309bb3bf2f4ec7e250dcfc",
+    "bytes": 67143,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 8970491,
+    "source_rows": 5567,
+    "source_md5": "d2a27aab10861962e1cafa31e765556a",
+    "source_sha256": "a9bdc695612e8110a2029e17c589618a8d37c7c56922af909992191056ed0982"
+  },
+  "subscription.gbk": {
+    "origin": "output/subscription.gbk",
+    "sha256": "16b3723f3690e6cdbd061336c4089c615b2f52b623b4d9cda7472565c04c13a7",
+    "bytes": 2631,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 50783,
+    "source_rows": 319,
+    "source_md5": "2990f03628291e2135eb9b9c7bca1842",
+    "source_sha256": "d3f5cec8292787c0ec8ddab526d42f31e9fb6894baac26e002e08920e7da86db"
+  },
+  "newbond_projection.gbk": {
+    "origin": "output/newbond_projection.gbk",
+    "sha256": "8993dd20d0b82cf968f7026506daa45cb4a702ee4156a7611985365e64af5570",
+    "bytes": 2824,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 2824,
+    "source_rows": 13,
+    "source_md5": "b74b52eac542578ad0ef74130f4a59c6",
+    "source_sha256": "8993dd20d0b82cf968f7026506daa45cb4a702ee4156a7611985365e64af5570"
+  },
+  "kzz_overview.gbk": {
+    "origin": "output/kzz_overview.gbk",
+    "sha256": "e34dcbfb472b1e6f5c7cf87f6586682b1e8a6c639f5e35ec0a803facd1999906",
+    "bytes": 2420,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 200764,
+    "source_rows": 314,
+    "source_md5": "b229e8bb981c317e31a9a64f7fd47934",
+    "source_sha256": "48722a91f1331e388103067310d5080bceb1f8f6f10411f82f2f9a2c94bdb994"
+  },
+  "kzz_progress.gbk": {
+    "origin": "output/kzz_progress.gbk",
+    "sha256": "f75b914f833a5482b6b859aeeb4f9f433782a4245117a3202561ada48f80c798",
+    "bytes": 1135,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 97764,
+    "source_rows": 316,
+    "source_md5": "6fc5543aa0fb17f4bf31440d742100e9",
+    "source_sha256": "59ad7821a6a5415afac4bac3e17bd18f27a529cd58b68040724f1e0d487eceb6"
+  },
+  "kzz_coupons.gbk": {
+    "origin": "output/kzz_coupons.gbk",
+    "sha256": "4d2331893d6b90215d9edc786e6f9354ee902a27685101c0a09de3b59597624c",
+    "bytes": 452,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 34046,
+    "source_rows": 316,
+    "source_md5": "33699e3abf51ed89002b2b4b12178773",
+    "source_sha256": "4ec985eba6558b2ae5f02684d8b95ae2a5f44f4a3b5a739d9e25e8e1a13742ed"
+  },
+  "kzz_sellback.gbk": {
+    "origin": "output/kzz_sellback.gbk",
+    "sha256": "e2a2fda5665ab838410fcd5f291163fe8e784a8fa58001ca7b3181dd638d34c4",
+    "bytes": 668,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 51745,
+    "source_rows": 320,
+    "source_md5": "5a3eb80640ff39ecedb4cfa670a74237",
+    "source_sha256": "f5bf7addfdd9f4bdc1a30f51b6f5b30b1466163bfa7b63093d66bc5c05780510"
+  },
+  "kzz_redemption.gbk": {
+    "origin": "output/kzz_redemption.gbk",
+    "sha256": "775dd198532b58c8119e0a5be64e7b21f6815607a96e63c0bdeee42bddd9bba0",
+    "bytes": 606,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 45021,
+    "source_rows": 320,
+    "source_md5": "b2738c9826058ed66d3fd7226cf253d4",
+    "source_sha256": "41c452160dd160a9b7f292123c2dee6aa94aec720709df68df750e9b400d032f"
+  },
+  "kzz_revision.gbk": {
+    "origin": "output/kzz_revision.gbk",
+    "sha256": "1e477e81a25f8583a10bd9384619acf5f436e7f0b4ae0df92755e7920965687b",
+    "bytes": 922,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 72313,
+    "source_rows": 320,
+    "source_md5": "d782fdec706bc3f46088651d07723309",
+    "source_sha256": "ab70f64bf23bec23077c0befa4861dde889a369ac055151884d2417d3637073c"
+  },
+  "kzz_exchangeable.gbk": {
+    "origin": "output/kzz_exchangeable.gbk",
+    "sha256": "9d3d574a2b9cd4c16c0a933fd28b8502abed004019acbb6afa1e92395223dd3f",
+    "bytes": 1449,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 1449,
+    "source_rows": 2,
+    "source_md5": "3a9a565da14442167a6dbe4f0a771c6a",
+    "source_sha256": "9d3d574a2b9cd4c16c0a933fd28b8502abed004019acbb6afa1e92395223dd3f"
+  },
+  "kzz_exchangeable_projection.gbk": {
+    "origin": "output/kzz_exchangeable_projection.gbk",
+    "sha256": "492e07d88bf8fb36a7a231caa59219387a57264db6c2aa56b0b357cceb817b3b",
+    "bytes": 375,
+    "selection": "rows retained by the existing fixture; verified against original capture",
+    "source_bytes": 375,
+    "source_rows": 2,
+    "source_md5": "887c7e2522a0c028dd541d1ad2cbd231",
+    "source_sha256": "492e07d88bf8fb36a7a231caa59219387a57264db6c2aa56b0b357cceb817b3b"
+  },
+  "sh600519.day": {
+    "origin": "c/tests/daily_fixtures.h:daily_stock_prefix",
+    "sha256": "4e1dcd818b87899d54ae2f7e6f30c4e560b4cc6b26f4d053167a68123ce43ea3",
+    "bytes": 320,
+    "selection": "verbatim retained prefix migrated from existing fixture, not a new independent capture",
+    "source_bytes": 189984,
+    "source_md5": "7b0a1ae1168c2fd716f466258e09e96c"
+  },
+  "sh110075.day": {
+    "origin": "c/tests/daily_fixtures.h:daily_bond_prefix",
+    "sha256": "5ce2c41f292eb09985102d6d911f2a55610d3eefe9b1a335dbb3cd2555b74915",
+    "bytes": 320,
+    "selection": "verbatim retained prefix migrated from existing fixture, not a new independent capture",
+    "source_bytes": 43456,
+    "source_md5": "7f478edf89a8fe53112537210084d941"
+  },
+  "gpsz000001.dat": {
+    "origin": "c/tests/professional_fixtures.h:professional_stock_prefix",
+    "sha256": "0284b8ceabcec6cd7388c510299c58a65ed0d32fd13de4266ef80a60b210bcf8",
+    "bytes": 312,
+    "selection": "verbatim retained prefix migrated from existing fixture, not a new independent capture",
+    "source_bytes": 397397,
+    "source_md5": "96adc0ce2135db6d9256dee7532a5be9"
+  },
+  "gpsh880471.dat": {
+    "origin": "c/tests/professional_fixtures.h:professional_board_prefix",
+    "sha256": "b4dad608b02e099307a2970419960d530ecbb84cb69a65641dc89a768f13144e",
+    "bytes": 312,
+    "selection": "verbatim retained prefix migrated from existing fixture, not a new independent capture",
+    "source_bytes": 386724,
+    "source_md5": "9a99962c669eddb85e93d6eab85074f5"
+  },
+  "sh600519.lc1": {
+    "origin": "c/tests/minute_fixtures.h:minute_plain",
+    "sha256": "1193983ea3be3d8cd8ef7ac01ec2634126d6af6eae9f0fb9bba958418cf6517a",
+    "bytes": 320,
+    "selection": "verbatim retained window migrated from existing fixture, not a new independent capture",
+    "source_records": 16080,
+    "source_md5": "89a93f419d35e99cf2da6622cf370172"
+  },
+  "sh000043.lc1": {
+    "origin": "c/tests/minute_fixtures.h:minute_violation",
+    "sha256": "7bbff66b49111de6947d3e5a503edf7ed8683dc227838779ecfc3eabc13c5535",
+    "bytes": 320,
+    "selection": "verbatim retained window migrated from existing fixture, not a new independent capture",
+    "source_records": 16080,
+    "source_md5": "46df6f2032c7c365feba711019c4129b"
+  },
+  "gbbq_selected.bin": {
+    "origin": "c/tests/gbbq_fixtures.h:gbbq_file",
+    "sha256": "275db28ebf7e49343aa9221080fe2f3d18976fc4c8645b5908e8584c2b15fe94",
+    "bytes": 149,
+    "selection": "existing five ciphertext records plus synthetic count header; original record indices 0,1,2,3,71"
+  },
+  "valuation_master.json": {
+    "origin": "c/tests/valuation_fixtures.h:valuation_master",
+    "sha256": "d12d123febb1cb795c8cfe3f5d06c3f9f1371a6a73d59612ec82c9ff095d6e99",
+    "bytes": 2451,
+    "selection": "retained JSN snapshot migrated from existing fixture; original CLI output is unavailable, no new independent capture claimed",
+    "source_rows": 11,
+    "source_bytes": 4621
+  },
+  "valuation_pe.json": {
+    "origin": "c/tests/valuation_fixtures.h:valuation_pe",
+    "sha256": "f3f71c4dce02656a7687ae9e0ad764614849fe1b0ffe11bf40c29ba33915a077",
+    "bytes": 677,
+    "selection": "retained JSN snapshot migrated from existing fixture; original CLI output is unavailable, no new independent capture claimed",
+    "source_rows": 3093,
+    "source_bytes": 382372
+  },
+  "valuation_pb.json": {
+    "origin": "c/tests/valuation_fixtures.h:valuation_pb",
+    "sha256": "bdc415b3a89617f6b96c182ba985f004d526a3b0cae2c1d69f481d225701e08b",
+    "bytes": 677,
+    "selection": "retained JSN snapshot migrated from existing fixture; original CLI output is unavailable, no new independent capture claimed",
+    "source_rows": 3093,
+    "source_bytes": 378997
+  },
+  "valuation_funds.json": {
+    "origin": "c/tests/valuation_fixtures.h:valuation_funds",
+    "sha256": "e08411e4d6557ef3779b99dfadc333bb1219a2ad07a6afb6772b6885e54f4fda",
+    "bytes": 497,
+    "selection": "retained JSN snapshot migrated from existing fixture; original CLI output is unavailable, no new independent capture claimed",
+    "source_rows": 6,
+    "source_bytes": 1290
+  },
+  "panorama_registry.txt": {
+    "origin": "native\\src\\market\\panorama.cpp",
+    "sha256": "5f032a1785c21f644e0450b816088ad2b226ca1561a852a727b4047e474587fb",
+    "bytes": 5408,
+    "selection": "view registry constant excerpt",
+    "source_sha256": "0e712970d7abe3466bf667527f968037c095187c8e37efb09be886051cbd4b5a"
+  },
+  "gbbq_cipher_state.txt": {
+    "origin": "native\\src\\corporate\\corporate_gbbq.cpp",
+    "sha256": "d376b75e4fc43efe112d1828639abfbb87ae4a76d69360bba6ef8cb25aeb2fa0",
+    "bytes": 5995,
+    "selection": "cipher state base64 constant excerpt",
+    "source_sha256": "afba56b2cd471d31d4a3f4ec2fb7b8d3c9cd46fd3ff4e8b1ee5f4ef4262c8b08"
+  }
+}

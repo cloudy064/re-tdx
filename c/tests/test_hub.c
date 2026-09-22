@@ -47,7 +47,7 @@ static void make_depth(tdx_depth *depth, const tdx_code *code) {
 }
 
 static int feed_fetch(void *context, const size_t *indices, size_t count,
-                      tdx_depth *out, tdx_error *err) {
+                      tdx_depth *out, size_t *batches_out, tdx_error *err) {
     fake_feed *feed = (fake_feed *)context;
     size_t position;
 
@@ -73,6 +73,10 @@ static int feed_fetch(void *context, const size_t *indices, size_t count,
             feed->total_hand[slot] - feed->total_hand[slot] / 10;
     }
     feed->calls++;
+    /* One upstream request per ten securities: the test only needs a
+     * recognisable number, so the hub can be checked for reporting it. */
+    if (batches_out)
+        *batches_out = (count + 9) / 10;
     return TDX_OK;
 }
 
@@ -305,7 +309,7 @@ static void test_unknown_code_is_rejected(void) {
     tdx_hub_destroy(hub);
 }
 
-static void test_queue_overflow_drops_oldest(void) {
+static void test_queue_coalesces_latest(void) {
     fake_feed feed;
     tdx_hub *hub = NULL;
     tdx_hub_options options;
@@ -351,10 +355,23 @@ static void test_queue_overflow_drops_oldest(void) {
         if (text) {
             memcpy(text, status.data, status.len);
             text[status.len] = '\0';
-            CHECK(strstr(text, "\"dropped\":8") != NULL,
-                  "expected eight dropped events in %s", text);
+            CHECK(strstr(text, "\"coalesced\":8") != NULL,
+                  "expected eight coalesced events in %s", text);
+            CHECK(strstr(text, "\"dropped\":0") != NULL,
+                  "coalescing must not discard a security's newest value");
             CHECK(strstr(text, "\"universe\":8") != NULL, "status must report the universe");
             CHECK(strstr(text, "\"subscribers\":1") != NULL, "status subscriber count");
+            /* The hub must report the cost its fetcher reported: it decides how much
+             * work a round is, so the number of upstream requests that work became is
+             * its business, and a fetcher that cannot say must not be read as zero. */
+            CHECK(strstr(text, "\"last_round_batches\":") != NULL,
+                  "status must carry the last round's batch count: %s", text);
+            if (strstr(text, "\"last_round_batches\":") != NULL) {
+                const char *field = strstr(text, "\"last_round_batches\":");
+                CHECK(field != NULL && strncmp(field + strlen("\"last_round_batches\":"),
+                                               "0", 1) != 0,
+                      "and it must not be zero after a round that fetched: %s", field);
+            }
             free(text);
         }
     }
@@ -549,7 +566,7 @@ int main(void) {
     test_change_is_reported_once();
     test_filtered_subscription();
     test_unknown_code_is_rejected();
-    test_queue_overflow_drops_oldest();
+    test_queue_coalesces_latest();
     test_failed_round_is_counted();
     test_snapshot_json();
     test_idle_backoff();

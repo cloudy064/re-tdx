@@ -129,7 +129,14 @@ int tdx_price_divisor(const char *code) {
         const char *prefix;
         int divisor;
     } rules[] = {
-        {"10", 100}, {"11", 100},   {"12", 100},  {"204", 100}, {"1318", 100},
+        {"10", 100},  {"11", 100},   {"12", 100},  {"204", 100}, {"1318", 100},
+        /* Measured: the exchangeable-bond segment needs 100 like the other bond
+         * segments, and the table's lack of a "13" rule left it at 1 - a price 100
+         * times par.  Verified against the local day files: every 132xxx code that
+         * still trades came out at a ratio of about 100 while four control families
+         * came out at about 1.  Only "132" is added: the rest of the family has no
+         * live code here to measure, so widening it further would be a guess. */
+        {"132", 100},
         {"15", 10},  {"16", 10},    {"50", 10},   {"51", 10},   {"52", 10},
         {"53", 10},  {"56", 10},    {"58", 10},
     };
@@ -356,6 +363,7 @@ int tdx_connection_call(tdx_connection *connection, uint16_t message_type,
         tdx_error_set(err, "connection or output buffer is null");
         return TDX_ERR;
     }
+    tdx_buf_clear(out);
     if (connection->socket_handle == (intptr_t)TDX_INVALID_SOCKET_VALUE) {
         tdx_error_set(err, "market-data connection is not open");
         return TDX_ERR;
@@ -482,7 +490,7 @@ static int tdx_connection_connect(tdx_connection *connection, tdx_error *err) {
 
 int tdx_connection_open(tdx_connection *connection, const tdx_endpoint *endpoint,
                         int timeout_ms, tdx_error *err) {
-    tdx_buf body;
+    tdx_buf body = {0};
     uint8_t handshake = 0x01;
     uint8_t name[128];
     size_t name_length = 0;
@@ -508,6 +516,7 @@ int tdx_connection_open(tdx_connection *connection, const tdx_endpoint *endpoint
     }
     if (tdx_connection_call(connection, TDX_HANDSHAKE_TYPE, &handshake, 1, &body,
                             err) != TDX_OK) {
+        tdx_buf_free(&body);
         tdx_connection_close(connection);
         return TDX_ERR;
     }
@@ -553,6 +562,11 @@ int tdx_quote_build_depth_request(const tdx_code *codes, size_t count,
         tdx_error_set(err, "request buffer is null");
         return TDX_ERR;
     }
+    tdx_buf_clear(out);
+    if (!codes) {
+        tdx_error_set(err, "depth request security list is null");
+        return TDX_ERR;
+    }
     if (count == 0) {
         tdx_error_set(err, "depth request needs at least one security");
         return TDX_ERR;
@@ -561,16 +575,17 @@ int tdx_quote_build_depth_request(const tdx_code *codes, size_t count,
         tdx_error_set(err, "depth batch exceeds uint16");
         return TDX_ERR;
     }
-    tdx_buf_init(out);
+    if (tdx_buf_reserve(out, 2 + count * 11, err) != TDX_OK)
+        return TDX_ERR;
     if (tdx_buf_append_u16le(out, (uint16_t)count, err) != TDX_OK) {
-        tdx_buf_free(out);
+        tdx_buf_clear(out);
         return TDX_ERR;
     }
     for (index = 0; index < count; ++index) {
         if (tdx_buf_push(out, (uint8_t)codes[index].market_id, err) != TDX_OK ||
             tdx_buf_append(out, codes[index].code, 6, err) != TDX_OK ||
             tdx_buf_append_zeros(out, 4, err) != TDX_OK) {
-            tdx_buf_free(out);
+            tdx_buf_clear(out);
             return TDX_ERR;
         }
     }

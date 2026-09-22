@@ -53,6 +53,8 @@ typedef struct fake_server {
     /* The pool keeps sessions open, so each accepted connection is
      * served on its own thread; the counters need a lock. */
     tdx_mutex lock;
+    tdx_cond cond;
+    size_t active_connections;
 } fake_server;
 
 static void close_socket(test_socket handle) {
@@ -68,7 +70,11 @@ static void close_socket(test_socket handle) {
 static int send_all(test_socket handle, const uint8_t *data, size_t size) {
     size_t sent = 0;
     while (sent < size) {
-        int written = (int)send(handle, (const char *)(data + sent), (int)(size - sent), 0);
+        int flags = 0;
+#if defined(MSG_NOSIGNAL)
+        flags = MSG_NOSIGNAL;
+#endif
+        int written = (int)send(handle, (const char *)(data + sent), (int)(size - sent), flags);
         if (written <= 0)
             return -1;
         sent += (size_t)written;
@@ -210,16 +216,18 @@ static void serve_connection(fake_server *server, test_socket client) {
             uint16_t served;
             uint16_t index;
             int drop = 0;
+            int shortfall;
             tdx_mutex_lock(&server->lock);
             server->depth_requests++;
             drop = server->depth_requests <= server->drop_depth_requests;
+            shortfall = server->shortfall;
             tdx_mutex_unlock(&server->lock);
             if (drop)
                 return; /* hang up to exercise reconnect */
             requested = (uint16_t)(body[0] | (body[1] << 8));
             served = requested;
-            if (server->shortfall > 0 && (int)served > server->shortfall) {
-                served = (uint16_t)(served - server->shortfall);
+            if (shortfall > 0 && (int)served > shortfall) {
+                served = (uint16_t)(served - shortfall);
                 tdx_mutex_lock(&server->lock);
                 server->shortfall_served++;
                 tdx_mutex_unlock(&server->lock);
@@ -250,6 +258,10 @@ static void fake_connection_main(void *context) {
     fake_connection *connection = (fake_connection *)context;
     serve_connection(connection->server, connection->client);
     close_socket(connection->client);
+    tdx_mutex_lock(&connection->server->lock);
+    connection->server->active_connections--;
+    tdx_cond_broadcast(&connection->server->cond);
+    tdx_mutex_unlock(&connection->server->lock);
     free(connection);
 }
 
@@ -274,10 +286,16 @@ static void fake_server_main(void *context) {
         }
         connection->server = server;
         connection->client = client;
+        tdx_mutex_lock(&server->lock);
+        server->active_connections++;
+        tdx_mutex_unlock(&server->lock);
         error.message[0] = '\0';
         if (tdx_thread_start(&thread, fake_connection_main, connection, &error) != TDX_OK) {
             close_socket(client);
             free(connection);
+            tdx_mutex_lock(&server->lock);
+            server->active_connections--;
+            tdx_mutex_unlock(&server->lock);
             continue;
         }
         tdx_thread_detach(&thread);
@@ -286,10 +304,18 @@ static void fake_server_main(void *context) {
 
 static int start_fake_server(fake_server *server, tdx_thread *thread, tdx_error *err) {
     struct sockaddr_in address;
+#if defined(_WIN32)
     int address_size = (int)sizeof(address);
+#else
+    socklen_t address_size = sizeof(address);
+#endif
     memset(server, 0, sizeof(*server));
     if (tdx_mutex_init(&server->lock, err) != TDX_OK)
         return TDX_ERR;
+    if (tdx_cond_init(&server->cond, err) != TDX_OK) {
+        tdx_mutex_destroy(&server->lock);
+        return TDX_ERR;
+    }
     server->listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (server->listener == TEST_INVALID) {
         tdx_error_set(err, "cannot create the fake server socket");
@@ -321,9 +347,20 @@ static int start_fake_server(fake_server *server, tdx_thread *thread, tdx_error 
 static void stop_fake_server(fake_server *server, tdx_thread *thread) {
     /* Stop accepting first so no new connection takes the lock we are
      * about to destroy. */
+#if defined(_WIN32)
+    shutdown(server->listener, SD_BOTH);
+#else
+    shutdown(server->listener, SHUT_RDWR);
+#endif
     close_socket(server->listener);
-    server->listener = TEST_INVALID;
     tdx_thread_join(thread);
+    server->listener = TEST_INVALID;
+    tdx_mutex_lock(&server->lock);
+    while (server->active_connections)
+        tdx_cond_wait(&server->cond, &server->lock, 1000);
+    tdx_mutex_unlock(&server->lock);
+    tdx_cond_destroy(&server->cond);
+    tdx_mutex_destroy(&server->lock);
 }
 
 static int server_port(const fake_server *server) { return server->port; }
@@ -545,6 +582,60 @@ static void test_sweep_argument_validation(void) {
           "an empty endpoint pool must be rejected");
 }
 
+static void test_persistent_pool_reuse_and_recovery(void) {
+    fake_server server;
+    tdx_thread thread = {0};
+    tdx_endpoint_pool endpoints = {0};
+    tdx_sweep_options options;
+    tdx_sweep_stats stats;
+    tdx_pool *pool = NULL;
+    tdx_code codes[10];
+    tdx_depth records[10];
+    tdx_error error;
+    if (start_fake_server(&server, &thread, &error) != TDX_OK) {
+        CHECK(0, "persistent fake server: %s", error.message);
+        return;
+    }
+    strcpy(endpoints.items[0].host, "127.0.0.1");
+    endpoints.items[0].port = (uint16_t)server.port;
+    endpoints.count = 1;
+    tdx_sweep_options_default(&options);
+    options.connections = 1;
+    options.batch_size = 10;
+    options.max_attempts = 1;
+    options.timeout_ms = 1000;
+    fill_codes(codes, 10);
+    CHECK(tdx_pool_create(&pool, &endpoints, &options, &error) == TDX_OK,
+          "persistent pool creation: %s", error.message);
+    if (pool) {
+        CHECK(tdx_pool_run(pool, codes, 10, records, 10, &stats, &error) == TDX_OK,
+              "first resident round: %s", error.message);
+        CHECK(stats.connections_opened == 1, "first round opens one session");
+        CHECK(tdx_pool_run(pool, codes, 10, records, 10, &stats, &error) == TDX_OK,
+              "second resident round: %s", error.message);
+        CHECK(stats.connections_opened == 0 && stats.records == 10,
+              "second round reuses the existing session and resets counters");
+        tdx_mutex_lock(&server.lock);
+        server.shortfall = 1;
+        tdx_mutex_unlock(&server.lock);
+        CHECK(tdx_pool_run(pool, codes, 10, records, 10, &stats, &error) == TDX_ERR,
+              "resident short round is rejected");
+        CHECK(stats.failed_batches == 1, "failed resident round reports one batch");
+        tdx_mutex_lock(&server.lock);
+        server.shortfall = 0;
+        tdx_mutex_unlock(&server.lock);
+        CHECK(tdx_pool_run(pool, codes, 10, records, 10, &stats, &error) == TDX_OK,
+              "resident pool recovers after failure: %s", error.message);
+        CHECK(stats.connections_opened == 1 && stats.records == 10,
+              "recovery opens a clean session and returns all records");
+        CHECK(tdx_pool_run(pool, codes, 10, records, 10, &stats, &error) == TDX_OK &&
+              stats.connections_opened == 0 && stats.failed_batches == 0,
+              "recovered session is reusable in the next generation");
+        tdx_pool_destroy(pool);
+    }
+    stop_fake_server(&server, &thread);
+}
+
 int main(void) {
 #ifdef _WIN32
     WSADATA data;
@@ -555,6 +646,7 @@ int main(void) {
     test_sweep_parallel_workers();
     test_sweep_detects_short_response();
     test_sweep_recovers_from_dropped_connection();
+    test_persistent_pool_reuse_and_recovery();
     if (failures) {
         printf("%d pool check(s) failed\n", failures);
         return 1;

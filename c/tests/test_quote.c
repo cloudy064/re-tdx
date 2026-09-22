@@ -98,6 +98,14 @@ static void test_price_divisor(void) {
     CHECK(tdx_price_divisor("204001") == 100, "repo divisor");
     CHECK(tdx_price_divisor("131800") == 100, "1318 prefix divisor");
     CHECK(tdx_price_divisor("131801") == 100, "1318 prefix divisor, six digits");
+    /* Measured against the local day files: every 132xxx code that still trades
+     * decodes at about 100 times par without this rule, while four control families
+     * come out at a ratio of about 1.  The rule is "132", not "13": only that
+     * segment was measured, and the rest of the family has no live code here. */
+    CHECK(tdx_price_divisor("132024") == 100, "exchangeable bond divisor");
+    CHECK(tdx_price_divisor("132026") == 100, "and the other live one");
+    CHECK(tdx_price_divisor("130001") == 1,
+          "while the rest of the 13 family is left as measured-unknown");
     CHECK(tdx_price_divisor("130800") == 1, "unlisted prefix stays at one");
 }
 
@@ -136,7 +144,7 @@ static void test_varint_round_trip(void) {
                                      123456789LL, -123456789LL};
     size_t index;
     for (index = 0; index < sizeof(values) / sizeof(values[0]); ++index) {
-        tdx_buf buffer;
+        tdx_buf buffer = {0};
         size_t offset = 0;
         int64_t decoded = 0;
         tdx_error error;
@@ -164,7 +172,7 @@ static void test_varint_rejects_truncation(void) {
 
 static void test_build_depth_request(void) {
     tdx_code codes[2];
-    tdx_buf buffer;
+    tdx_buf buffer = {0};
     tdx_error error;
     const uint8_t want[] = {0x02, 0x00, 0x00, '0', '0', '0', '0', '0', '1',
                             0x00, 0x00, 0x00, 0x00,
@@ -237,7 +245,7 @@ static void append_depth_record_default(tdx_buf *buffer) {
 
 static void test_depth_response(void) {
     tdx_code requested[1];
-    tdx_buf payload;
+    tdx_buf payload = {0};
     tdx_depth depths[4];
     size_t count = 0;
     size_t index;
@@ -296,7 +304,7 @@ static void test_depth_response(void) {
 
 static void test_depth_response_two_records(void) {
     tdx_code requested[2];
-    tdx_buf payload;
+    tdx_buf payload = {0};
     tdx_depth depths[4];
     size_t count = 0;
     size_t index;
@@ -340,7 +348,7 @@ static void test_depth_response_two_records(void) {
 
 static void test_depth_response_rejects_bad_count(void) {
     tdx_code requested[1];
-    tdx_buf payload;
+    tdx_buf payload = {0};
     tdx_depth depths[4];
     size_t count = 0;
     size_t index;
@@ -360,7 +368,7 @@ static void test_depth_response_rejects_bad_count(void) {
 
 static void test_depth_response_rejects_truncation(void) {
     tdx_code requested[1];
-    tdx_buf payload;
+    tdx_buf payload = {0};
     tdx_depth depths[4];
     size_t count = 0;
     size_t index;
@@ -380,6 +388,39 @@ static void test_depth_response_rejects_truncation(void) {
     tdx_buf_free(&payload);
 }
 
+static void test_build_depth_request_reuse(void) {
+    tdx_code codes[2];
+    tdx_buf buffer = {0};
+    tdx_error error = {0};
+    uint8_t *allocation;
+    size_t capacity;
+    size_t iteration;
+    CHECK(tdx_code_parse("sz000001", &codes[0], &error) == TDX_OK, "first code");
+    CHECK(tdx_code_parse("sh600000", &codes[1], &error) == TDX_OK, "second code");
+    CHECK(tdx_buf_reserve(&buffer, 2048, &error) == TDX_OK, "reserve batch buffer");
+    allocation = buffer.data;
+    capacity = buffer.cap;
+    for (iteration = 0; iteration < 100; ++iteration) {
+        size_t count = 1 + iteration % 2;
+        CHECK(tdx_quote_build_depth_request(codes, count, &buffer, &error) == TDX_OK,
+              "repeat depth request: %s", error.message);
+        CHECK(buffer.data == allocation && buffer.cap == capacity,
+              "depth builder preserves caller allocation across batches");
+        CHECK(buffer.len == 2 + 11 * count && tdx_u16le(buffer.data) == count,
+              "each build replaces the previous request");
+        CHECK(memcmp(buffer.data + 3, "000001", 6) == 0, "first identity survives reuse");
+    }
+    CHECK(tdx_quote_build_depth_request(codes, 0, &buffer, &error) == TDX_ERR,
+          "an empty batch fails");
+    CHECK(buffer.len == 0 && buffer.data == allocation && buffer.cap == capacity,
+          "failed build clears bytes without losing caller allocation");
+    CHECK(tdx_quote_build_depth_request(NULL, 1, &buffer, &error) == TDX_ERR,
+          "a nonempty batch requires a security list");
+    CHECK(tdx_quote_build_depth_request(codes, 1, &buffer, &error) == TDX_OK,
+          "buffer remains reusable after failure");
+    tdx_buf_free(&buffer);
+}
+
 static void test_wire_number_zero(void) {
     CHECK(tdx_wire_number(0) == 0.0, "wire number of zero must be zero");
 }
@@ -393,6 +434,7 @@ int main(void) {
     test_varint_round_trip();
     test_varint_rejects_truncation();
     test_build_depth_request();
+    test_build_depth_request_reuse();
     test_depth_response();
     test_depth_response_two_records();
     test_depth_response_rejects_bad_count();

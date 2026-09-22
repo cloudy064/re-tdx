@@ -1,0 +1,130 @@
+[
+  {
+    "script": "make_auction_fixtures.py",
+    "output": "c/tests/auction_fixtures.h",
+    "original_generator": "output/make_auction_fixtures.py",
+    "original_generator_sha256": "ca57201a6846e7516d6045c272bcbbfbfdd68c721928f235c398773913bddc93"
+  },
+  {
+    "script": "make_capital_fixtures.py",
+    "output": "c/tests/capital_fixtures.h",
+    "original_generator": "output/make_capital_fixtures.py",
+    "original_generator_sha256": "78565cc868be15d71e1f25f25821411e55c8132a70eaeaab1fa91d86b8132591"
+  },
+  {
+    "script": "make_convertible_fixtures.py",
+    "output": "c/tests/convertible_fixtures.h",
+    "original_generator": "output/make_convertible_fixtures.py",
+    "original_generator_sha256": "496475e078cd9fc04a5a09863f235c797fce3ba5e03f37d436f8f70dbcb03cee",
+    "extension_generator": "output\\extend_convertible_fixture.py",
+    "extension_generator_sha256": "7ab8bf11915b959dbb38fb96dd010ec2b48061728e4def3b60b232715cf95678"
+  },
+  {
+    "script": "make_daily_fixtures.py",
+    "output": "c/tests/daily_fixtures.h",
+    "original_generator": "output/make_daily_fixtures.py",
+    "original_generator_sha256": "ed348aa47071cd976a3dd941b93e9256bd3739568662c954f5a4cfb5382af3c5"
+  },
+  {
+    "script": "make_finance_fixtures.py",
+    "output": "c/tests/finance_fixtures.h",
+    "original_generator": "output/make_finance_fixtures.py",
+    "original_generator_sha256": "cf4a5c46f76ac9df79d1267065792468f7621d10e23433e19bbf56eca462802e"
+  },
+  {
+    "script": "make_gbbq_fixtures.py",
+    "output": "c/tests/gbbq_fixtures.h",
+    "original_generator": "output/make_gbbq_fixtures.py",
+    "original_generator_sha256": "73aa65fecedf50223fb8604869f9be904f3fb6e72c1032f1f154d10b1b8af470"
+  },
+  {
+    "script": "make_industry_fixtures.py",
+    "output": "c/tests/industry_fixtures.h",
+    "original_generator": "output/make_industry_fixtures.py",
+    "original_generator_sha256": "f6f101db7b9ca3744ec22780108324be3cd7a309ed4cd264285c4ab71af905f1"
+  },
+  {
+    "script": "make_jsn_fixtures.py",
+    "output": "c/tests/jsn_fixtures.h",
+    "original_generator": "output/make_jsn_fixtures.py",
+    "original_generator_sha256": "710b29ef4ad8d636cf7174bfe50fda67fa2c13b90cc5ee6b2b19b4f665cde5b6"
+  },
+  {
+    "script": "make_kline_fixtures.py",
+    "output": "c/tests/kline_fixtures.h",
+    "original_generator": "output/make_kline_fixtures.py",
+    "original_generator_sha256": "6d3d25df142003d362c9e3b9063e893c4d7a895bf2fb33eae012ccb41964606e"
+  },
+  {
+    "script": "make_limits_fixtures.py",
+    "output": "c/tests/limits_fixtures.h",
+    "original_generator": "output/make_limits_fixtures.py",
+    "original_generator_sha256": "c73bbb5482de7c1293aec659b2e1caa7ec9485ab3fef50dbc1093a2896effcb9"
+  },
+  {
+    "script": "make_minute_fixtures.py",
+    "output": "c/tests/minute_fixtures.h",
+    "original_generator": "output/make_minute_fixtures.py",
+    "original_generator_sha256": "9d2d8c8e0de68e92517e4e8c2160a3d6b35d72b294bb28e3a0db040e885405bc"
+  },
+  {
+    "script": "make_pending_fixtures.py",
+    "output": "c/tests/pending_fixtures.h",
+    "original_generator": "output/make_pending_fixtures.py",
+    "original_generator_sha256": "60a56440d6f093f6e18b6034e65a085431d7b46ee7751f0df2380ddf12aa1fe2"
+  },
+  {
+    "script": "make_pricing_fixtures.py",
+    "output": "c/tests/pricing_fixtures.h",
+    "original_generator": "output/make_pricing_fixtures.py",
+    "original_generator_sha256": "8c73a39c000de2124feb3075f07bfddd07cc35c34297305d6d58e04abd7326b0"
+  },
+  {
+    "script": "make_professional_finance_fixtures.py",
+    "output": "c/tests/professional_finance_fixtures.h",
+    "original_generator": "output/make_professional_finance_fixtures.py",
+    "original_generator_sha256": "86103598cfb93ed77c7bad77b861f4f845d527285b09845ad671cb8a76b5d9bb"
+  },
+  {
+    "script": "make_professional_fixtures.py",
+    "output": "c/tests/professional_fixtures.h",
+    "original_generator": "output/make_professional_fixtures.py",
+    "original_generator_sha256": "d44b289132c8e5992feff36604857880a8183b458178ac6d6ab50606adafa467"
+  },
+  {
+    "script": "make_snapshot_fixtures.py",
+    "output": "c/tests/snapshot_fixtures.h",
+    "original_generator": "output/make_snapshot_fixtures.py",
+    "original_generator_sha256": "e70095de94f79cf5f1020401c4b7c34e2096114ffdfd877642f7d95b181f1983"
+  },
+  {
+    "script": "make_subscription_fixtures.py",
+    "output": "c/tests/subscription_fixtures.h",
+    "original_generator": "output\\widen_subscription_fixture.py",
+    "original_generator_sha256": "c173b5e0de0072c8a99fbdbaba15a62fb15d7c082e37b8873324b0ea37589ab8"
+  },
+  {
+    "script": "make_timeline_fixtures.py",
+    "output": "c/tests/timeline_fixtures.h",
+    "original_generator": "output/make_timeline_fixtures.py",
+    "original_generator_sha256": "bbf795a404f51c6b32ef2f23e78fe61ba9e3760438c751aefda1671dae7af097"
+  },
+  {
+    "script": "make_valuation_fixtures.py",
+    "output": "c/tests/valuation_fixtures.h",
+    "original_generator": "output/make_valuation_fixtures.py",
+    "original_generator_sha256": "5b45c14350ceb1b292784961a7cc88339cb6d8f7199f2751b777bb47fbf36c96"
+  },
+  {
+    "script": "make_gbbq_cipher_state.py",
+    "output": "c/src/gbbq_cipher_state.h",
+    "original_generator": "output/make_gbbq_cipher_state.py",
+    "original_generator_sha256": "bb76b0a98a2d6b856e5791ddc508e388c5471a13d46a1c1858d48ab9db6e8238"
+  },
+  {
+    "script": "make_panorama_views.py",
+    "output": "c/src/tdx_panorama_views.c",
+    "original_generator": "output/make_panorama_views.py",
+    "original_generator_sha256": "6ce2f76e58da20dbc746dd19353d20a87ff309a0a0195f42ffcb47a66f7dd8c6"
+  }
+]

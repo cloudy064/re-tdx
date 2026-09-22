@@ -263,8 +263,8 @@ int tdx_directory_parse_page(const uint8_t *payload, size_t size, int market_id,
 
 int tdx_directory_count(tdx_connection *connection, int market_id, size_t *out,
                         tdx_error *err) {
-    tdx_buf request;
-    tdx_buf response;
+    tdx_buf request = {0};
+    tdx_buf response = {0};
     int result = TDX_ERR;
 
     if (!connection || !out) {
@@ -295,8 +295,8 @@ done:
 
 int tdx_directory_page(tdx_connection *connection, int market_id, uint32_t start,
                        uint32_t limit, tdx_security_list *out, tdx_error *err) {
-    tdx_buf request;
-    tdx_buf response;
+    tdx_buf request = {0};
+    tdx_buf response = {0};
     size_t parsed = 0;
     int result = TDX_ERR;
 

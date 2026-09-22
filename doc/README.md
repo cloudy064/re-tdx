@@ -6,6 +6,10 @@
 
 ## 当前快照
 
+2026-09-22：纯 C L1 工程完成生命周期、缓冲所有权、解析输出、队列新鲜度、缓存与构建分层修复。
+Windows MinGW、MSVC、Linux Clang ASan/UBSan 全部 51 项测试通过；详细范围、兼容边界与证据见
+[C 工程归档](99-log/2026-09-22-c-engineering-review.md)。以下研究侧快照保留原日期和证据范围。
+
 2026-08-02：Phase 1 侦察继续，Phase 2 已完成网络传输层和一段应用
 消息层静态分析。真实安装、7709 连接、两套 Asio、`tpbus -> TaApi`、
 `FastHQ.Subscribe`、数据插件、认证加密和 `TJyaid` 设备身份辅助层已有

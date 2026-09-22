@@ -24,9 +24,11 @@ typedef struct tdx_thread {
 } tdx_thread;
 typedef struct tdx_mutex {
     void *native; /* CRITICAL_SECTION* */
+    int initialized;
 } tdx_mutex;
 typedef struct tdx_cond {
     void *native; /* CONDITION_VARIABLE* */
+    int initialized;
 } tdx_cond;
 #else
 #include <pthread.h>
@@ -36,9 +38,12 @@ typedef struct tdx_thread {
 } tdx_thread;
 typedef struct tdx_mutex {
     pthread_mutex_t native;
+    int initialized;
 } tdx_mutex;
 typedef struct tdx_cond {
     pthread_cond_t native;
+    int initialized;
+    int monotonic;
 } tdx_cond;
 #endif
 
@@ -50,12 +55,15 @@ void tdx_thread_join(tdx_thread *thread);
 void tdx_thread_detach(tdx_thread *thread);
 
 int tdx_mutex_init(tdx_mutex *mutex, tdx_error *err);
+/* Zero-initialized objects may be safely destroyed before init succeeds. */
 void tdx_mutex_destroy(tdx_mutex *mutex);
+int tdx_mutex_is_initialized(const tdx_mutex *mutex);
 void tdx_mutex_lock(tdx_mutex *mutex);
 void tdx_mutex_unlock(tdx_mutex *mutex);
 
 int tdx_cond_init(tdx_cond *cond, tdx_error *err);
 void tdx_cond_destroy(tdx_cond *cond);
+int tdx_cond_is_initialized(const tdx_cond *cond);
 /* Waits until signalled or timeout_ms elapses.  The mutex must be held. */
 void tdx_cond_wait(tdx_cond *cond, tdx_mutex *mutex, int timeout_ms);
 void tdx_cond_signal(tdx_cond *cond);

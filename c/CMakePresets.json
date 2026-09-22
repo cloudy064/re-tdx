@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../build/c-${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    { "name": "linux-gcc", "inherits": "base", "cacheVariables": { "CMAKE_C_COMPILER": "gcc" } },
+    {
+      "name": "linux-clang-sanitize",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "TDX_ENABLE_SANITIZERS": "ON" }
+    },
+    {
+      "name": "linux-fuzz",
+      "inherits": "linux-clang-sanitize",
+      "cacheVariables": { "TDX_BUILD_FUZZERS": "ON" }
+    },
+    { "name": "windows-mingw", "inherits": "base", "cacheVariables": { "CMAKE_C_COMPILER": "gcc" } },
+    { "name": "windows-msvc", "inherits": "base", "cacheVariables": { "CMAKE_C_COMPILER": "cl" } }
+  ],
+  "buildPresets": [
+    { "name": "linux-gcc", "configurePreset": "linux-gcc" },
+    { "name": "linux-clang-sanitize", "configurePreset": "linux-clang-sanitize" },
+    { "name": "linux-fuzz", "configurePreset": "linux-fuzz", "targets": ["tdx-fuzz-codecs"] },
+    { "name": "windows-mingw", "configurePreset": "windows-mingw" },
+    { "name": "windows-msvc", "configurePreset": "windows-msvc" }
+  ],
+  "testPresets": [
+    { "name": "linux-gcc", "configurePreset": "linux-gcc", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-sanitize", "configurePreset": "linux-clang-sanitize", "output": { "outputOnFailure": true } },
+    { "name": "windows-mingw", "configurePreset": "windows-mingw", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc", "configurePreset": "windows-msvc", "output": { "outputOnFailure": true } }
+  ]
+}

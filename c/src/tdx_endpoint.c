@@ -26,10 +26,13 @@ typedef struct ini_table {
     size_t count;
 } ini_table;
 
+/* connect.cfg spells its keys in mixed case (HostNum, IPAddress01, Port01), so
+ * the lookup has to fold case: an exact compare silently misses every entry and
+ * drops the process onto the compiled single-node fallback. */
 static const char *ini_find(const ini_table *table, const char *key) {
     size_t index;
     for (index = 0; index < table->count; ++index)
-        if (strcmp(table->entries[index].key, key) == 0)
+        if (tdx_ascii_casecmp(table->entries[index].key, key) == 0)
             return table->entries[index].value;
     return NULL;
 }
