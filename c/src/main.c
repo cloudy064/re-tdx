@@ -261,6 +261,7 @@ typedef struct cli_options {
     const char *code;
     const char *name;
     const char *sort;
+    const char *lc1_output;
     int ascending;
     double previous_close;
     int has_previous_close;
@@ -590,6 +591,8 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
             options->resource = value;
         } else if (strcmp(argument, "--prefix") == 0) {
             options->prefix = value;
+        } else if (strcmp(argument, "--lc1-output") == 0) {
+            options->lc1_output = value;
         } else if (strcmp(argument, "--sort") == 0) {
             options->sort = value;
         } else if (strcmp(argument, "--name") == 0) {
@@ -1509,6 +1512,52 @@ static int command_kline(const cli_options *options, tdx_error *err) {
         wanted = wanted * 10000 + (day_filter[4] - '0') * 1000 + (day_filter[5] - '0') * 100 +
                  (day_filter[6] - '0') * 10 + (day_filter[7] - '0');
         series.count = kline_select_date(series.bars, series.count, wanted);
+    }
+
+    /* WRITE THE SAME BARS AS .lc1, which is the format the terminal itself reads for local
+     * minute data.  The conversion happens first and in full, so a bar the file cannot hold
+     * leaves no partial file behind. */
+    if (options->lc1_output && *options->lc1_output) {
+        static tdx_lc1_bar packed[TDX_LC1_BARS_MAX];
+        static tdx_buf records;
+        FILE *file;
+        size_t converted;
+        int refused = 0;
+        if (series.count > TDX_LC1_BARS_MAX) {
+            tdx_error_set(err, "%zu bars exceed the %d this writer holds", series.count,
+                          TDX_LC1_BARS_MAX);
+            goto done;
+        }
+        for (converted = 0; converted < series.count; ++converted) {
+            if (tdx_lc1_from_kline(&series.bars[converted], &packed[converted], err) != TDX_OK) {
+                refused = 1;
+                break;
+            }
+        }
+        if (refused)
+            goto done;
+        tdx_buf_init(&records);
+        if (tdx_lc1_pack(packed, series.count, &records, err) != TDX_OK) {
+            tdx_buf_free(&records);
+            goto done;
+        }
+        file = fopen(options->lc1_output, "wb");
+        if (!file) {
+            tdx_error_set(err, "cannot open %s for writing", options->lc1_output);
+            tdx_buf_free(&records);
+            goto done;
+        }
+        if (records.len && fwrite(records.data, 1, records.len, file) != records.len) {
+            fclose(file);
+            tdx_error_set(err, "cannot write the .lc1 file");
+            tdx_buf_free(&records);
+            goto done;
+        }
+        fclose(file);
+        if (!options->quiet)
+            fprintf(stderr, "wrote %zu bars (%zu bytes) to %s\n", series.count, records.len,
+                    options->lc1_output);
+        tdx_buf_free(&records);
     }
 
     stream = open_output(options);

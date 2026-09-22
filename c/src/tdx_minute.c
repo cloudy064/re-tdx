@@ -160,3 +160,147 @@ int tdx_lc1_locate(const char *root, int market_id, const char *code, char *out,
     }
     return TDX_OK;
 }
+
+/* ------------------------------------------------------------------ */
+/* writing the format back                                             */
+/* ------------------------------------------------------------------ */
+
+int tdx_lc1_encode_date(uint32_t date, uint16_t *out) {
+    unsigned year;
+    unsigned month;
+    unsigned day;
+    unsigned word;
+
+    if (!out)
+        return 0;
+    year = date / 10000;
+    month = (date / 100) % 100;
+    day = date % 100;
+    /* THE BOUND IS THE 16-BIT WORD, NOT THE YEAR FIELD.  The year would reach 4051 but
+     * (y - 2004) * 2048 + month * 100 + day has to fit 65535, which makes the last date the
+     * format can hold 2035-12-31: 31 * 2048 + 1231 = 64719.  A caller writing a later date
+     * would otherwise get a word the reader decodes as some other year entirely. */
+    if (year < 2004 || month < 1 || month > 12 || day < 1 || day > 31)
+        return 0;
+    word = (year - 2004) * 2048 + month * 100 + day;
+    if (word > 0xFFFFu)
+        return 0;
+    *out = (uint16_t)word;
+    return 1;
+}
+
+int tdx_lc1_from_kline(const tdx_kline_bar *bar, tdx_lc1_bar *out, tdx_error *err) {
+    uint16_t date_word;
+    unsigned minute_word;
+
+    if (!bar || !out) {
+        tdx_error_set(err, "converting a kline bar needs a bar and an output");
+        return TDX_ERR;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!tdx_lc1_encode_date((uint32_t)bar->date, &date_word)) {
+        tdx_error_set(err, "the date %d cannot be written as an .lc1 date word", bar->date);
+        return TDX_ERR;
+    }
+    minute_word = (unsigned)(bar->hour * 60 + bar->minute);
+    if (bar->hour < 0 || bar->hour > 23 || bar->minute < 0 || bar->minute > 59 ||
+        minute_word >= 1440) {
+        tdx_error_set(err, "%02d:%02d is not a minute of the day", bar->hour, bar->minute);
+        return TDX_ERR;
+    }
+    /* The record's volume is 32 bits wide, and the online aggregates can exceed it.  A
+     * truncation here would write a plausible but wrong file, so it is refused. */
+    if (bar->volume < 0 || bar->volume > 0xFFFFFFFFLL) {
+        tdx_error_set(err, "a volume of %lld does not fit the .lc1 record's 32 bits",
+                      (long long)bar->volume);
+        return TDX_ERR;
+    }
+    out->date = (uint32_t)bar->date;
+    out->hour = bar->hour;
+    out->minute = bar->minute;
+    out->open = bar->open;
+    out->high = bar->high;
+    out->low = bar->low;
+    out->close = bar->close;
+    out->amount = bar->amount;
+    out->volume = (uint32_t)bar->volume;
+    out->extra_1 = bar->extra_1;
+    out->extra_2 = bar->extra_2;
+    return TDX_OK;
+}
+
+int tdx_lc1_pack(const tdx_lc1_bar *bars, size_t count, tdx_buf *out, tdx_error *err) {
+    size_t index;
+
+    if (!out || (!bars && count)) {
+        tdx_error_set(err, "packing .lc1 needs a buffer and the bars");
+        return TDX_ERR;
+    }
+    for (index = 0; index < count; ++index) {
+        uint16_t date_word;
+        unsigned minute_word = (unsigned)(bars[index].hour * 60 + bars[index].minute);
+        if (!tdx_lc1_encode_date(bars[index].date, &date_word)) {
+            tdx_error_set(err, "bar %zu holds the date %u, which has no .lc1 date word", index,
+                          bars[index].date);
+            return TDX_ERR;
+        }
+        if (bars[index].hour < 0 || bars[index].hour > 23 || bars[index].minute < 0 ||
+            bars[index].minute > 59 || minute_word >= 1440) {
+            tdx_error_set(err, "bar %zu is at %02d:%02d, which is not a minute of the day",
+                          index, bars[index].hour, bars[index].minute);
+            return TDX_ERR;
+        }
+        {
+            /* 32 bytes, in the order the reader expects. */
+            uint8_t record[32];
+            uint32_t amount_bits;
+            uint32_t volume_bits = bars[index].volume;
+            float open = (float)bars[index].open;
+            float high = (float)bars[index].high;
+            float low = (float)bars[index].low;
+            float close = (float)bars[index].close;
+            float amount = (float)bars[index].amount;
+            size_t position = 0;
+            record[position++] = (uint8_t)(date_word & 0xff);
+            record[position++] = (uint8_t)(date_word >> 8);
+            record[position++] = (uint8_t)(minute_word & 0xff);
+            record[position++] = (uint8_t)((minute_word >> 8) & 0xff);
+            memcpy(&amount_bits, &open, sizeof(amount_bits));
+            record[position++] = (uint8_t)(amount_bits & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 8) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 16) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 24) & 0xff);
+            memcpy(&amount_bits, &high, sizeof(amount_bits));
+            record[position++] = (uint8_t)(amount_bits & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 8) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 16) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 24) & 0xff);
+            memcpy(&amount_bits, &low, sizeof(amount_bits));
+            record[position++] = (uint8_t)(amount_bits & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 8) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 16) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 24) & 0xff);
+            memcpy(&amount_bits, &close, sizeof(amount_bits));
+            record[position++] = (uint8_t)(amount_bits & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 8) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 16) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 24) & 0xff);
+            memcpy(&amount_bits, &amount, sizeof(amount_bits));
+            record[position++] = (uint8_t)(amount_bits & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 8) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 16) & 0xff);
+            record[position++] = (uint8_t)((amount_bits >> 24) & 0xff);
+            record[position++] = (uint8_t)(volume_bits & 0xff);
+            record[position++] = (uint8_t)((volume_bits >> 8) & 0xff);
+            record[position++] = (uint8_t)((volume_bits >> 16) & 0xff);
+            record[position++] = (uint8_t)((volume_bits >> 24) & 0xff);
+            record[position++] = (uint8_t)(bars[index].extra_1 & 0xff);
+            record[position++] = (uint8_t)(bars[index].extra_1 >> 8);
+            record[position++] = (uint8_t)(bars[index].extra_2 & 0xff);
+            record[position++] = (uint8_t)(bars[index].extra_2 >> 8);
+            if (tdx_buf_append(out, record, sizeof(record), err) != TDX_OK)
+                return TDX_ERR;
+        }
+    }
+    return TDX_OK;
+}

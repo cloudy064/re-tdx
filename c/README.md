@@ -74,6 +74,7 @@ c/
     tdx_daily_json.h       日线 bar 与汇总的 JSONL 渲染
     tdx_minute.h           本地 .lc1 分钟线（OHLC 越界只计数不拒绝）
     tdx_minute_json.h      分钟 bar 与汇总的 JSONL 渲染
+    (tdx_minute.h 还提供 .lc1 的【写入】：日期字编码、打包、从下载 bar 转换)
     tdx_industry.h         行业估值资源（同资源内两种成员计数互证）
     tdx_industry_json.h    行业行与股票-行业行的 JSONL 渲染
     tdx_limit.h            hqrule.dat 的涨跌停规则与限价计算
@@ -132,6 +133,7 @@ c/
     test_professional.c  professional_fixtures.h (generated, real .dat prefixes)
     test_daily.c  daily_fixtures.h (generated, real .day prefixes)
     test_minute.c  minute_fixtures.h (generated, a real .lc1 violation window)
+    test_minute_pack.c (real terminal bytes read and written back byte-identical)
     test_industry.c  industry_fixtures.h (generated, whole industries)
     test_limit.c (the real hqrule.dat, inline, and the rounding arithmetic)
     test_valuation.c  valuation_fixtures.h (generated, master whole)
@@ -157,7 +159,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-37/37 测试通过、0 warning。
+38/38 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -231,6 +233,11 @@ tdx-l1stream ranking --sort change-pct --limit 100 `
 # 封单：一只证券的涨跌停价与封单量/封单比
 tdx-l1stream seal --security sz000504 --root C:\new_tdx `
                  --output output\seal-000504.jsonl
+
+# 下载分钟线并写成本地 .lc1（终端自己读的那种格式）
+tdx-l1stream kline --security sh600519 --period 1m --limit 300 `
+                  --lc1-output output\lc1\sh600519.lc1 `
+                  --output output\kline-1m.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -2042,6 +2049,69 @@ if (bid2.volume_hand && ...)                   /* 量却在 */
 
 证据：`output/seal_verification_evidence.txt`。
 
+## 分钟线的下载与落盘：`kline --lc1-output`（`minute_download*`）
+
+把线上的分钟线**写成本地 `.lc1`**——第 13 轮那个读取器的逆。参考实现里的 `pack_lc1` 正是这件事。
+
+### 决定性的检验：**真实终端字节 → 读 → 写 → 同样的字节**
+
+`minute_fixtures.h` 里是**终端自己写的** `sh600519.lc1` 的一个窗口。测试把它解析后**重新打包**，
+结果必须与那 320 字节**逐字节相同**——不是近似，也不只是读取器命名的那几个字段。
+
+**这比"我的写和我的读对得上"强得多**：输入的那些字节是**终端写的**。违规窗口也同样往返，
+**且仍然是违规的**——写入器不会"修正"读取器容忍的东西。
+
+### 两条用外部真值的活体检验
+
+本来的计划是与终端自己的文件逐条比对。**这条路走不通，而原因值得记下来**：
+
+| | 条数 | 日期字范围 |
+|---|---:|---|
+| 终端本地的 `sh600519.lc1` | 16,080 | 43814..44122（**2025-08-06 .. 2025-11-14**） |
+| 本轮下载 | 16,000 | 45674..45978（2026-06-18 .. 2026-09-22） |
+
+**共同覆盖的分钟是 0**——终端本地的分钟文件**停在十个月前**。
+所以「0 条中 0 处不同」什么都证明不了，**把它写成成功会是本轮最糟的结果** ✗ 改用：
+
+| 检验 | 外部真值 | 结果 |
+|---|---|---|
+| **A. 编码器** | 200 个真实 `.lc1` 文件里 **67 个日期字**（终端写的） | **67/67** 原样编码回去 |
+| **B. 打包器** | 0x0537 下载的 **16,000 条** | **全部逐字段相同**（0 缺失、0 不符） |
+| **C. 读回** | 第 13 轮那个对着真实终端文件验证过的读取器 | 16,000 条 / 68 个日期 / 0 处越界 |
+
+### 顺带量到的一条边界
+
+`(年 − 2004) × 2048 + 月 × 100 + 日` 要装进 **16 位**，所以**格式能表达的最后一个日期是 2035-12-31**
+（`31 × 2048 + 1231 = 64719`；2036-01-01 是 65637，**超出字宽**）。
+**年份字段本身能到 4051**，但字装不下——我测试里先写了 2047，是**只看了年份界**。
+
+### 拒绝而不是截断
+
+- **量超出记录的 32 位**：线上日线/周线聚合量可以超出，**悄悄截断会写出一个看起来合理但错误的文件**；
+- 日期或分钟字表达不了的值。
+
+### 已知边界
+
+尾部两个字的语义仍未确立：`sh600519` 在终端文件里**全为 0**，本客户端下载的 bar 也不带这两个字，
+所以写出来是 0；对 `sh000001`（那两个**逐分钟变化**）本客户端**无法还原**——写在这里而不是略过。
+
+### 本轮我自己的四个错误
+
+1. **脚本报告了意图而不是结果**：`add_lc1_pack_header.py` 在内存里改完后**又从磁盘重读**，
+   把改动丢掉、写回未修改的内容，**却仍打印 "header extended"** ✗
+2. 同一类还有一次：一句 include 的替换**没匹配上**，脚本照样打印成功；
+3. **与第 17 轮同一类错误重复了一次**：`main.c` 按模块逐个 include，我又以为它会自动拿到
+   （这次编译器立刻拦住了）；
+4. 测试里我把**年份界**当成了**字宽界**（见上）。
+
+### 未做的部分
+
+参考的 `minute_download*` 还覆盖**扩展市场（期货/期权）的分钟线**：`MinuteBar` 带
+`open_interest`/`auxiliary_price` 扩展字段，`ExpansionInstrument` 的合约乘数来自 `0x23F5`。
+**那些字段 `.lc1` 装不下**（参考的 `pack_lc1` 因此直接拒绝），属于扩展市场那一层，本轮不做。
+
+证据：`output/lc1_pack_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -2261,6 +2331,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_valuation` | **整份主表**（11 行全断言）、标签按 **UTF-8 字节精确比对**（只查"非空"会放过乱码）、四个收益字段、每行都带明细 id、**真实 PE/PB 前缀按日期合并**（20 点全部两侧都有、值来自两个资源、升序）、合成行覆盖 **pe_only / pb_only / 输入乱序 / 单侧缺失**、基金字段（净值/溢价/规模/类型）、**四个渲染器全部断言可解析**（漏掉的那个正是出错的） |
 | `test_ranking` | 请求体 9 个字段**逐个断言**（含 `reverse` 的 0/1/2 三态，**降序是默认而非标志**）、页大小 1..80 的拒绝、排序键表（名称/大小写/十进制/十六进制/未知名）、分类拼写（`a-shares`/`a_share`/数字）、**由测试构造的报文**（varint 由辅助函数按数值生成，不手写）断言**前收高于现价的下跌情形**、买卖一价同样是差值、负的涨速/开盘抢筹、两段未建模字节按 hex、拒绝：超 80 条、**尾部多余字节**、市场越界、代码非数字、尾部截断、容量不足、渲染可被项目自己的解析器解析 |
 | `test_seal` | 三条路径**各自构造**（活体只在盘中命中其中一条）：**连续涨停**（现价==上限且卖一不存在 ⇒ 封单=买一量、金额 497,408,562、比值 7.359385）、**跌停方向**（金额与比值**为负**）、**两侧都有挂单即使现价恰在限价也不封**、竞价不平衡（无现价、两侧交叉，比值为 null 而非 0）、**竞价二档**（二档**价缺席而量存在**、一档量并入分母；**给二档设价格即跳出该分支**）、拒绝状态掩码 `0x3C`**不是**、`0x5C`**是**、限价不可用/每手为 0/无成交时各字段的可用性、渲染可被项目自己的解析器解析且输入随结果一起输出 |
+| `test_minute_pack` | **真实终端字节 → 解析 → 重新打包 → 逐字节相同**（不只是读取器命名的字段）、**违规窗口往返后仍然违规**（写入器不修正）、编码/解码在六年真实日期上**互为逆**、**2035-12-31 是可表达的最后一个日期**（年份界 4051 是假的界，16 位字才是）、日期/小时/分钟的拒绝、**量超出 32 位被拒而 0xFFFFFFFF 被接受**（是边界不是一刀切）、尾两字被原样带过而非丢弃 |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -2307,8 +2378,11 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
 12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt`、`valuation`、`ranking`、
-    以及 `seal_order` **整个模块**（涨跌停规则 + 封单量/封单比）已交付；
-    还剩——`panorama` 与 `minute_download*`（分钟线的下载与展开）。
+    `seal_order`（涨价停规则 + 封单量/封单比）、以及 `minute_download*` 的
+    **A 股分钟线下载与 `.lc1` 落盘**已交付；还剩——`panorama`。
+13. **扩展市场（期货/期权）的分钟线**：`MinuteBar` 带 `open_interest`/`auxiliary_price`，
+    `ExpansionInstrument` 的合约乘数来自 `0x23F5`；**这些字段 `.lc1` 装不下**，
+    属于扩展市场那一层，范围归属未判定。
 13. **板块层级展开**：`hyzt` 之上还有一层父子板块/成员并集/层级树，依赖
     `tdx/blocks.hpp` 与一路 cloud 数据源；**其范围归属尚未判定**。
 

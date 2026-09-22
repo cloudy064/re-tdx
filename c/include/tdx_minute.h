@@ -39,6 +39,7 @@
 #include <stdint.h>
 
 #include "tdx_error.h"
+#include "tdx_kline.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,6 +65,21 @@ typedef struct tdx_lc1_bar {
 
 /* Decodes the date word.  Returns 0 when it is not a real date. */
 int tdx_lc1_decode_date(uint16_t word, uint32_t *out);
+
+/* The inverse: word = (year - 2004) * 2048 + month * 100 + day.  Refuses a date the word
+ * cannot hold. */
+int tdx_lc1_encode_date(uint32_t date, uint16_t *out);
+
+/* WRITES THE FORMAT THE READER READS.  What the record has no room for is refused rather
+ * than rounded away: a volume outside the unsigned 32-bit field the record keeps for it -
+ * which the online daily and weekly aggregates can exceed - and a date or minute the word
+ * cannot express.  The two trailing words ARE carried: the reader reports them unnamed and
+ * the writer puts back whatever it was given. */
+int tdx_lc1_pack(const tdx_lc1_bar *bars, size_t count, tdx_buf *out, tdx_error *err);
+
+/* Converts a downloaded kline bar into the file's own shape, refusing what the file cannot
+ * hold.  This is where the guards live for the download path. */
+int tdx_lc1_from_kline(const tdx_kline_bar *bar, tdx_lc1_bar *out, tdx_error *err);
 
 /* Parses a .lc1 file.  ohlc_violations may be NULL and counts the records whose high is
  * below, or low above, one of the other three prices - which real files do contain. */
