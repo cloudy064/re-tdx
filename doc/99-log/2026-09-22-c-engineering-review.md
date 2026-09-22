@@ -82,3 +82,17 @@ GitHub CI 已配置，本次归档中的测试是本地 Windows 与 SSH Linux �
 - 新增与修改文档的本地链接、CLI 示例和测试注册一致；暂存变更的 whitespace 检查通过。
 
 冻结的 fixture 输入使用 binary 属性保留精确字节；只清理源码中的末尾空行和生成器的多余空白，不改写输入哈希。
+
+## PR 阶段的 Windows CI 差异
+
+归档提交后的 [首轮 GitHub CI](https://github.com/cloudy064/re-tdx/actions/runs/35699022161) 中，Linux GCC 和 Clang sanitizer 均通过；
+Windows MinGW/MSVC 的前 50 项 CTest 通过，最后一项生成一致性检查失败，差异仅在财务 ZIP 夹具。
+
+对 `e2d08b3` 的原生成器进行交叉运行，已精确复现：本机 Python 3.9 使用 zlib，而官方 Windows Python 3.14.4 使用 `1.3.1.zlib-ng`。
+相同的 1642 字节财务内容、固定时间和 ZIP 元数据，stored ZIP 均为 1772 字节且逐字节相同；deflate ZIP 从 812 字节变为 943 字节。
+内容解压后相同，漂移来自压缩库输出，并非业务解码错误。这也说明同一 runner 上前置 `python` 与 CMake 发现的解释器可能产生不同生成结果。
+
+后续修复已将 method 8 的压缩位流改为确定性的固定 Huffman/LZ77 编码，并继续用 Python zipfile/zlib 独立读回验证。
+保留真实压缩、CRC 损坏和缺失 EOCD 的测试覆盖。Python 3.9/zlib 与 Windows Python 3.14.4/zlib-ng 的生成文件逐字节一致，
+deflate ZIP 均为 1179 字节；21 个产物与 35 个输入的生成检查无漂移，MinGW 财务包、生成和 CLI 契约 3/3 通过。
+PR 的远端检查状态以 [PR #2](https://github.com/cloudy064/re-tdx/pull/2) 为准。

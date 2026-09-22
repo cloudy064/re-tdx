@@ -1,8 +1,8 @@
 /* test_professional_finance.c - the quarterly finance packages.
  *
- * The archives in the fixture are written by PYTHON's zipfile and read by this code, so
- * the two implementations are checked against each other; a reader tested only against
- * archives it wrote itself proves much less.
+ * An independent Python generator constructs deterministic ZIP archives and checks
+ * them with zipfile/zlib before this C reader consumes them. The fixture encoding
+ * does not change with the host compressor's heuristics.
  *
  * Four archives, one per branch that matters:
  *
