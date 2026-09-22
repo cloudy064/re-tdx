@@ -56,6 +56,7 @@ c/
     tdx_bonds_json.h      债券行的 JSONL 渲染
     tdx_convertible.h     可转债概览字段映射
     tdx_convertible_json.h 可转债行的 JSONL 渲染
+    tdx_convertible_join.h 可转债六文档连接
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -71,6 +72,7 @@ c/
     tdx_gbbq.c  gbbq_cipher_state.h (generated)
     tdx_limits.c  tdx_limits_json.c  tdx_json.c  tdx_jsn.c
     tdx_bonds.c  tdx_bonds_json.c  tdx_convertible.c  tdx_convertible_json.c
+    tdx_convertible_join.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -86,7 +88,8 @@ c/
     test_json.c      (grammar vectors, no capture)
     test_jsn.c       jsn_fixtures.h (generated, whole raw GBK payload)
     test_bonds.c     (captured + synthetic cases, labelled)
-    test_convertible.c  convertible_fixtures.h (generated, reduced capture)
+    test_convertible.c  convertible_fixtures.h (generated, six reduced captures)
+    test_convertible_join.c  (the same six fixtures, joined)
 ```
 
 ## 构建
@@ -105,7 +108,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-22/22 测试通过、0 warning。
+23/23 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -209,6 +212,10 @@ tdx-l1stream jsn --resource list/zq_gz201_1.jsn --bonds --root C:\new_tdx `
 # 可转债概览（只映射概览文档，不做参考实现的六文档连接）
 tdx-l1stream jsn --resource list/kzz_kzzsy201_1.jsn --convertible `
                 --root C:\new_tdx --output output\convertible.jsonl
+
+# 六份文档一次取回并连接（这才是参考实现的完整视图）
+tdx-l1stream convertible --root C:\new_tdx `
+                       --output output\convertible-join.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -1034,6 +1041,64 @@ JSN 层保证"某格就是它表头所说的那一格"；这一层是**领域知
 
 证据：`output/convertible_verification_evidence.txt`。
 
+## 可转债六文档连接（`convertible`）
+
+参考实现的完整视图：**六份文档按"市场:代码"连接**，再挂三份触发条款。
+
+| 文档 | 资源 | 实测规模 |
+|---|---|---|
+| 概览 | `list/kzz_kzzsy201_1.jsn` | 200,764 字节 / 314 行 × 55 列 |
+| 进度 | `list/func_kzz_tkjd201.jsn` | 97,764 字节 / 316 行 × 21 列 |
+| 票息 | `list/func_kzz_lltk201.jsn` | 34,046 字节 / 316 行 × 13 列 |
+| 回售 | `list/func_kzz_hstk201.jsn` | 51,745 字节 / 320 行 × 20 列 |
+| 赎回 | `list/func_kzz_shtk201.jsn` | 45,021 字节 / 320 行 × 19 列 |
+| 下修 | `list/func_kzz_xztk201.jsn` | 72,313 字节 / 320 行 × 22 列 |
+
+一次取回全部六份并连接，约 1.6 秒。
+
+### 键并集是关键设计
+
+**实测 314 只债券在六份文档里全都有**，另有 6 只只在非概览文档里出现。连接因此取
+**六份文档键的并集**（本次 320 只），而不是按概览遍历——只按概览会漏掉那 6 只，
+而它们确实有进度/回售/赎回/下修数据。那 6 只的概览字段如实报缺失，
+`core_terms_complete` 为 false（314/320 为 true），`sources` 块则说明每只债券
+**究竟是哪几份文档提供的**。
+
+### 跨文档印证（本层最有价值的验证）
+
+概览的 `FXLLXL` 与票息文档的 `PMLL_1..6` 描述**同一份票息表**，但两者单位不同：
+概览写分数，票息文档写百分比。312 个可比行实测：
+
+| 关系 | 行数 |
+|---|---:|
+| 前 n-1 期：`payment_rates[i] × 100 == rates_pct[i]` | 312/312 |
+| 尾期：`payment_rates[-1] × 100 == rates_pct[-1] + compensation_rate_pct` | **311** |
+| 尾期就等于 `rates_pct[-1]`（未并入补偿） | **0** |
+
+样本（天能转债）：`[0.4, 0.6, 1.0, 1.6, 2.5, 15.0]` 对 `[0.4, 0.6, 1.0, 1.6, 2.5, 3.0]`，补偿 12 —— **15 = 3 + 12**。
+
+这说明两件事：**两份文档互相印证**（不是各自自洽），以及**尾期已并入补偿利率**，
+所以只看某一列会低估最后一年的现金流。参考实现把两列原样并列，本移植照做并在此点明。
+
+另外 314/314 行满足 `payment_dates 条数 == term_years`。
+
+### 测试里最锋利的一条
+
+三组触发条款来自三份不同文档，所以**同一只债券的三个触发条件必须互不相同**：
+SH110076 的回售是 `30/30`/70%、赎回是 `15/30`/130%、下修是 `15/30`/80%，
+起始日分别是 20241102 / 20210506 / 20201102。
+
+**把一份文档读三遍的实现会产出三个完全相同的触发条款，而且看起来仍然合理**——
+这条断言就是为它准备的。
+
+### 未移植
+
+- 两份可转债**换股投影**（`list/func_kzz103_1.jsn` 等）及其字段优先级；
+- 参考实现用投影补概览空字段的 `text_with_projection` / `number_with_projection`；
+- 待发、可交换债、申购、定价等参考实现的其他视图。
+
+证据：`output/convertible_join_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1226,6 +1291,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_jsn` | 资源路径前缀规范化（前导斜杠、已带前缀不重复）、**整份真实 GBK 载荷**的转换与解析（长度必须变长）、42 行 × 20 列、中文列值精确比对、空单元格保留为空串而非 null、根非数组/缺 colheader-data/**行宽与表头不符**/行非数组的拒绝 |
 | `test_bonds` | 20 条 profile 的分类与前缀/斜杠写法、市场命名（含 44→bj 与未知市场的 `M<n>:`）、**抓包资源**的完整字段映射与中文精确比对、三种单位语义各自的换算与"不换算"、合并表/投影的身份列交换与标的、票息表配对与 `|值|≤1 乘 100` 规则、日期多于利率/空表/缓冲区不足（拒绝截断）、缺代码列/市场非数字的拒绝、渲染括号平衡 |
 | `test_convertible` | 可交换债判定（132 前缀，含截断码）、**55 列 × 3 行真实抓包**的字段映射、中文精确比对、`core_terms_complete` 判据、**ZGDM"要么空要么六位数字"的实测断言**、概览缺失列回到"缺失而非 0"、缺代码/市场非数字的拒绝、**渲染括号平衡**（该检查抓出了漏掉的 overview 右括号） |
+| `test_convertible_join` | 六份 fixture 的列数与源行数、**键并集为 3**（同一批债券在六份里，所以不是 18）与容量不足的拒绝、SH110076 六路全部命中、**三组触发条款取值必须互不相同**（一份文档读三遍会产出一模一样的触发条款）、票息列表条数 == 期数、只给一份文档/不给概览时仍能连接并把缺失报为缺失、**连接后渲染的括号平衡** |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1234,8 +1300,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **可转债的其余五份文档与连接**：概览已就位；进度/票息/回售/赎回/下修与按
-   `市场:代码` 的连接、三份触发条款文档、换股投影优先级尚未移植。
+6. **可转债的换股投影与其他视图**：六文档连接已就位；两份换股投影
+   （`list/func_kzz103_1.jsn` 等）及其字段优先级、以及待发/可申购/定价视图尚未移植。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi
@@ -1256,8 +1322,5 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 6. `.img` 的累计字段止于 15:00，而成交明细含盘后固定价格成交（`status=5`）。
    两者口径不同是**已验证的事实**，不是缺口；用的时候记得按 `time` 或 `status` 切。
 7. `1i..1m` 这个阶段辅助块还没有语义。
-9. **公开基础数据**都没进 `c/`：财务基础信息（`0x0010`）、股本变迁/除权（`0x000F`）；
-   资源类也只接了 `hishf/date/*.img`，JSN/`zhb`/权息/财务的解析器都没有——传输层
-   （`0x02C5`/`0x06B9`）是通的，缺的是各自的载荷解析。
 8. **历史 `.img` 的公网取数被挡**：见上文，公开节点一律报长度 0；需要恢复带权益
    会话的握手/口令链路，或继续依赖客户端自己的缓存。

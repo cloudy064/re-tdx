@@ -306,3 +306,75 @@ int tdx_bonds_format_summary(tdx_buf *out, size_t rows, size_t rows_with_name,
         return TDX_ERR;
     return TDX_OK;
 }
+
+int tdx_bonds_format_comma_array(tdx_buf *out, const tdx_bond_text *text, int numeric_as_number,
+                                 tdx_error *err) {
+    size_t index = 0;
+    size_t emitted = 0;
+
+    if (!out || !text) {
+        tdx_error_set(err, "a comma list needs a buffer and a value");
+        return TDX_ERR;
+    }
+    if (tdx_buf_push(out, '[', err) != TDX_OK)
+        return TDX_ERR;
+    while (text->present && index < text->length) {
+        size_t start;
+        size_t stop;
+        /* Skip separators and padding. */
+        while (index < text->length &&
+               (text->data[index] == ',' || text->data[index] == ' ' ||
+                text->data[index] == '\t'))
+            index++;
+        start = index;
+        while (index < text->length && text->data[index] != ',')
+            index++;
+        stop = index;
+        while (stop > start && (text->data[stop - 1] == ' ' || text->data[stop - 1] == '\t'))
+            stop--;
+        if (stop == start)
+            continue;
+        if (emitted > 0 && tdx_buf_push(out, ',', err) != TDX_OK)
+            return TDX_ERR;
+        emitted++;
+        if (numeric_as_number) {
+            char scratch[64];
+            char *end = NULL;
+            double value;
+            size_t length = stop - start;
+            if (length < sizeof(scratch)) {
+                memcpy(scratch, text->data + start, length);
+                scratch[length] = '\0';
+                value = strtod(scratch, &end);
+                if (end && end != scratch && *end == '\0') {
+                    if (tdx_buf_append_printf(out, err, "%.10g", value) != TDX_OK)
+                        return TDX_ERR;
+                    continue;
+                }
+            }
+            /* A piece that is not a number is kept as a string: the reference's
+             * numeric_array does the same, and dropping it would shorten the list
+             * without saying so. */
+        }
+        if (tdx_buf_push(out, '"', err) != TDX_OK)
+            return TDX_ERR;
+        {
+            size_t position;
+            for (position = start; position < stop; ++position) {
+                char ch = text->data[position];
+                if (ch == '"' || ch == '\\') {
+                    char pair[2];
+                    pair[0] = '\\';
+                    pair[1] = ch;
+                    if (tdx_buf_append(out, pair, 2, err) != TDX_OK)
+                        return TDX_ERR;
+                } else if (tdx_buf_push(out, (uint8_t)ch, err) != TDX_OK) {
+                    return TDX_ERR;
+                }
+            }
+        }
+        if (tdx_buf_push(out, '"', err) != TDX_OK)
+            return TDX_ERR;
+    }
+    return tdx_buf_push(out, ']', err);
+}

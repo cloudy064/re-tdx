@@ -1,6 +1,8 @@
 /* tdx_convertible_json.c - JSONL rendering for a convertible-bond overview row. */
 #include "tdx_convertible_json.h"
 
+#include "tdx_bonds_json.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -220,4 +222,192 @@ int tdx_convertible_format_summary(tdx_buf *out, size_t rows, size_t rows_comple
                               rows_with_underlying) != TDX_OK)
         return TDX_ERR;
     return TDX_OK;
+}
+
+/* --- the joined row --------------------------------------------------- */
+
+/* The trigger documents share their shape, so one emitter serves all three. */
+static int append_trigger(tdx_buf *out, const tdx_convertible_trigger *trigger, tdx_error *err) {
+    if (APPEND_LITERAL(out, err, "{\"condition\":") != TDX_OK ||
+        append_text(out, &trigger->condition, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"price_ratio_pct\":") != TDX_OK ||
+        append_number(out, trigger->has_price_ratio_pct, trigger->price_ratio_pct, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"start_date\":") != TDX_OK ||
+        append_text(out, &trigger->start_date, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"trigger_price\":") != TDX_OK ||
+        append_number(out, trigger->has_trigger_price, trigger->trigger_price, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"conversion_price\":") != TDX_OK ||
+        append_number(out, trigger->has_conversion_price, trigger->conversion_price, err) !=
+            TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"current_days\":") != TDX_OK ||
+        append_text(out, &trigger->current_days, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"current_ratio_pct\":") != TDX_OK ||
+        append_number(out, trigger->has_current_ratio_pct, trigger->current_ratio_pct, err) !=
+            TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"status\":") != TDX_OK ||
+        append_text(out, &trigger->status, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"history_count\":") != TDX_OK ||
+        append_number(out, trigger->has_history_count, trigger->history_count, err) != TDX_OK)
+        return TDX_ERR;
+    /* The history dates are a comma list in the resource; the reference turns them
+     * into an array, so the count above and this array are two views of one column. */
+    if (APPEND_LITERAL(out, err, ",\"history_dates\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_bonds_format_comma_array(out, &trigger->history_dates, 0, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"available_days\":") != TDX_OK ||
+        append_number(out, trigger->has_available_days, trigger->available_days, err) != TDX_OK)
+        return TDX_ERR;
+    return tdx_buf_push(out, '}', err);
+}
+
+static int append_source_flags(tdx_buf *out, const tdx_convertible_join_flags *flags,
+                               tdx_error *err) {
+    if (APPEND_LITERAL(out, err, "{\"overview\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append(out, flags->from_overview ? "true" : "false",
+                       flags->from_overview ? 4 : 5, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"progress\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append(out, flags->from_progress ? "true" : "false",
+                       flags->from_progress ? 4 : 5, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"coupons\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append(out, flags->from_coupons ? "true" : "false",
+                       flags->from_coupons ? 4 : 5, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"sellback\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append(out, flags->from_sellback ? "true" : "false",
+                       flags->from_sellback ? 4 : 5, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"redemption\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append(out, flags->from_redemption ? "true" : "false",
+                       flags->from_redemption ? 4 : 5, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"revision\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append(out, flags->from_revision ? "true" : "false",
+                       flags->from_revision ? 4 : 5, err) != TDX_OK)
+        return TDX_ERR;
+    return tdx_buf_push(out, '}', err);
+}
+
+int tdx_convertible_format_joined(tdx_buf *out, const tdx_convertible_row *row,
+                                  const tdx_convertible_extra *extra,
+                                  const tdx_convertible_join_flags *flags,
+                                  const char *overview_resource, tdx_error *err) {
+    tdx_buf overview;
+    size_t inner;
+    size_t index;
+    int result;
+
+    if (!out || !row || !extra || !flags) {
+        tdx_error_set(err, "the joined convertible-bond renderer needs a row, the extras and the "
+                           "flags");
+        return TDX_ERR;
+    }
+    /* The overview group is the same object the overview-only renderer produces, so
+     * it is rendered by that function and then merged: one implementation of those
+     * fields, not two that could drift. */
+    tdx_buf_init(&overview);
+    if (tdx_convertible_format(&overview, row, overview_resource, 0, 0, err) != TDX_OK) {
+        tdx_buf_free(&overview);
+        return TDX_ERR;
+    }
+    /* Splice `,"progress":...` in before the overview object's closing brace. */
+    inner = overview.len;
+    while (inner > 0 && overview.data[inner - 1] != '}')
+        inner--;
+    if (inner == 0) {
+        tdx_buf_free(&overview);
+        tdx_error_set(err, "the overview renderer produced no closing brace");
+        return TDX_ERR;
+    }
+    if (tdx_buf_append(out, overview.data, inner - 1, err) != TDX_OK)
+        goto failed;
+
+    if (APPEND_LITERAL(out, err, ",\"progress\":{\"issue_size_100m_yuan\":") != TDX_OK ||
+        append_number(out, extra->has_issue_size_100m_yuan, extra->issue_size_100m_yuan, err) !=
+            TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"remaining_balance_100m_yuan\":") != TDX_OK ||
+        append_number(out, extra->has_remaining_balance_100m_yuan,
+                      extra->remaining_balance_100m_yuan, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"conversion_progress_pct\":") != TDX_OK ||
+        append_number(out, extra->has_conversion_progress_pct, extra->conversion_progress_pct,
+                      err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"redeemed_amount_100m_yuan\":") != TDX_OK ||
+        append_number(out, extra->has_redeemed_amount_100m_yuan,
+                      extra->redeemed_amount_100m_yuan, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"sellback_amount_100m_yuan\":") != TDX_OK ||
+        append_number(out, extra->has_sellback_amount_100m_yuan,
+                      extra->sellback_amount_100m_yuan, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"maturity_progress_pct\":") != TDX_OK ||
+        append_number(out, extra->has_maturity_progress_pct, extra->maturity_progress_pct,
+                      err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, "}") != TDX_OK)
+        goto failed;
+
+    if (APPEND_LITERAL(out, err, ",\"coupons\":{\"term_years\":") != TDX_OK ||
+        append_number(out, extra->has_term_years, extra->term_years, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"rates_pct\":[") != TDX_OK)
+        goto failed;
+    for (index = 0; index < 6; ++index) {
+        if (index > 0 && tdx_buf_push(out, ',', err) != TDX_OK)
+            goto failed;
+        if (append_number(out, extra->has_rate[index], extra->rates_pct[index], err) != TDX_OK)
+            goto failed;
+    }
+    if (APPEND_LITERAL(out, err, "],\"compensation_rate_pct\":") != TDX_OK ||
+        append_number(out, extra->has_compensation_rate_pct, extra->compensation_rate_pct,
+                      err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"payment_dates\":") != TDX_OK ||
+        tdx_bonds_format_comma_array(out, &extra->payment_dates, 0, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"payment_rates\":") != TDX_OK ||
+        tdx_bonds_format_comma_array(out, &extra->payment_rates, 1, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, "}") != TDX_OK)
+        goto failed;
+
+    if (APPEND_LITERAL(out, err, ",\"sellback\":") != TDX_OK ||
+        append_trigger(out, &extra->sellback, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"redemption\":") != TDX_OK ||
+        append_trigger(out, &extra->redemption, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"revision\":") != TDX_OK ||
+        append_trigger(out, &extra->revision, err) != TDX_OK)
+        goto failed;
+    if (APPEND_LITERAL(out, err, ",\"sources\":") != TDX_OK ||
+        append_source_flags(out, flags, err) != TDX_OK)
+        goto failed;
+
+    /* Close the object the overview renderer opened, which is still open here. */
+    result = tdx_buf_push(out, '}', err);
+    tdx_buf_free(&overview);
+    return result;
+
+failed:
+    tdx_buf_free(&overview);
+    return TDX_ERR;
 }

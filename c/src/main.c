@@ -15,6 +15,7 @@
  *   capital     share-capital changes and ex-rights events (0x000F)
  *   limits      the special price-limit list (0x0452)
  *   jsn         fetch a JSN resource and emit its rows (0x02C5 / 0x06B9 + JSON)
+ *   convertible fetch and join the six convertible-bond documents
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 #include "tdx_capital.h"
 #include "tdx_capital_json.h"
 #include "tdx_convertible.h"
+#include "tdx_convertible_join.h"
 #include "tdx_convertible_json.h"
 #include "tdx_directory.h"
 #include "tdx_download.h"
@@ -73,7 +75,8 @@ static void usage(void) {
     printf("  tdx-l1stream finance --security CODE [--security CODE ...] [options]\n");
     printf("  tdx-l1stream capital --security CODE [--security CODE ...] [options]\n");
     printf("  tdx-l1stream limits [--start N] [options]\n");
-    printf("  tdx-l1stream jsn --resource PATH [options]\n\n");
+    printf("  tdx-l1stream jsn --resource PATH [options]\n");
+    printf("  tdx-l1stream convertible [options]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -143,6 +146,9 @@ static void usage(void) {
     printf("                       the overview document, not the reference's six-document\n");
     printf("                       join\n");
     printf("  --schedule           also expand the coupon schedule arrays\n\n");
+    printf("convertible:\n");
+    printf("  --max-records N      cap how many bonds the join emits, default %u\n\n",
+           (unsigned)TDX_CONVERTIBLE_KEYS_MAX);
     printf("serve:\n");
     printf("  --port N             listen port on 127.0.0.1, default 8790\n");
     printf("  --max-subscribers N  concurrent SSE readers, default 16\n");
@@ -2314,6 +2320,149 @@ close_output:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* convertible                                                         */
+/* ------------------------------------------------------------------ */
+
+/* The six documents one at a time, then the join.  Each transfer verifies its own
+ * digest, so a short or reordered chunk stream cannot look like a whole document. */
+static int command_convertible(const cli_options *options, tdx_error *err) {
+    static const char *const resources[6] = {
+        TDX_CONVERTIBLE_OVERVIEW_RESOURCE,  TDX_CONVERTIBLE_PROGRESS_RESOURCE,
+        TDX_CONVERTIBLE_COUPONS_RESOURCE,   TDX_CONVERTIBLE_SELLBACK_RESOURCE,
+        TDX_CONVERTIBLE_REDEMPTION_RESOURCE, TDX_CONVERTIBLE_REVISION_RESOURCE,
+    };
+    static tdx_jsn_document documents[6];
+    static tdx_buf raw;
+    static tdx_buf utf8;
+    static tdx_buf line;
+    static tdx_code keys[TDX_CONVERTIBLE_KEYS_MAX];
+    tdx_convertible_documents set;
+    tdx_convertible_row row;
+    tdx_convertible_extra extra;
+    tdx_convertible_join_flags flags;
+    tdx_file_info info;
+    char remote[128];
+    char endpoint[80];
+    FILE *stream;
+    size_t index;
+    size_t key_count = 0;
+    size_t union_count = 0;
+    size_t emitted = 0;
+    size_t complete = 0;
+    size_t from_overview = 0;
+    size_t only_elsewhere = 0;
+    size_t sold_by_overview = 0;
+    int status = TDX_ERR;
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        return TDX_ERR;
+    }
+    tdx_buf_init(&raw);
+    tdx_buf_init(&utf8);
+    tdx_buf_init(&line);
+    memset(endpoint, 0, sizeof(endpoint));
+    for (index = 0; index < 6; ++index)
+        tdx_jsn_document_init(&documents[index]);
+
+    for (index = 0; index < 6; ++index) {
+        memset(&info, 0, sizeof(info));
+        tdx_buf_clear(&raw);
+        tdx_buf_clear(&utf8);
+        if (tdx_jsn_remote_path(resources[index], "bi", remote, sizeof(remote), err) != TDX_OK)
+            goto close_output;
+        if (tdx_download_resource(&options->pool, options->timeout_ms, remote, 1, &raw, &info,
+                                  endpoint, sizeof(endpoint), err) != TDX_OK)
+            goto close_output;
+        if (tdx_jsn_gbk_to_utf8(raw.data, raw.len, &utf8, err) != TDX_OK)
+            goto close_output;
+        if (tdx_jsn_parse(utf8.data, utf8.len, &documents[index], err) != TDX_OK)
+            goto close_output;
+        if (!options->quiet)
+            fprintf(stderr, "convertible %s: %zu bytes, md5=%s, %zu rows\n", remote, raw.len,
+                    info.md5, documents[index].row_count);
+    }
+
+    set.overview = &documents[0];
+    set.progress = &documents[1];
+    set.coupons = &documents[2];
+    set.sellback = &documents[3];
+    set.redemption = &documents[4];
+    set.revision = &documents[5];
+    if (tdx_convertible_keys(&set, keys, TDX_CONVERTIBLE_KEYS_MAX, &key_count, &union_count,
+                             err) != TDX_OK)
+        goto close_output;
+    if (!options->quiet)
+        fprintf(stderr, "convertible: the six documents name %zu distinct bonds\n",
+                union_count);
+
+    for (index = 0; index < key_count; ++index) {
+        tdx_error step;
+        step.message[0] = '\0';
+        if (options->max_records > 0 && emitted >= (size_t)options->max_records)
+            break;
+        if (tdx_convertible_join(&set, &keys[index], &row, &extra, &flags, &step) != TDX_OK) {
+            *err = step;
+            goto close_output;
+        }
+        tdx_buf_clear(&line);
+        if (tdx_convertible_format_joined(&line, &row, &extra, &flags, resources[0], err) !=
+            TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto close_output;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the convertible stream");
+            goto close_output;
+        }
+        emitted++;
+        if (row.core_terms_complete)
+            complete++;
+        if (flags.from_overview)
+            from_overview++;
+        else
+            only_elsewhere++;
+        if (flags.from_overview && extra.has_remaining_balance_100m_yuan)
+            sold_by_overview++;
+    }
+
+    tdx_buf_clear(&line);
+    if (tdx_buf_append_printf(&line, err,
+                              "{\"type\":\"convertible_join_summary\",\"documents\":6,"
+                              "\"endpoint\":\"%s\",\"union_keys\":%zu,\"rows\":%zu,"
+                              "\"rows_core_terms_complete\":%zu,\"rows_from_overview\":%zu,"
+                              "\"rows_only_elsewhere\":%zu}",
+                              endpoint, union_count, emitted, complete, from_overview,
+                              only_elsewhere) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the convertible summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    for (index = 0; index < 6; ++index)
+        tdx_jsn_document_free(&documents[index]);
+    tdx_buf_free(&raw);
+    tdx_buf_free(&utf8);
+    tdx_buf_free(&line);
+    if (status != TDX_OK)
+        return status;
+    if (!options->quiet)
+        fprintf(stderr, "convertible: %zu of %zu bonds joined, %zu only in a non-overview "
+                        "document\n",
+                emitted, union_count, only_elsewhere);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -2397,6 +2546,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "jsn") == 0) {
         if (command_jsn(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "convertible") == 0) {
+        if (command_convertible(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

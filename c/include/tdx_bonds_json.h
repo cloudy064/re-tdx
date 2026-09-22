@@ -34,6 +34,13 @@ int tdx_bonds_format_summary(tdx_buf *out, size_t rows, size_t rows_with_name,
                              const char *resource, const char *scale_name, const char *endpoint,
                              tdx_error *err);
 
+/* A comma-separated column rendered as a JSON array.  This is the reference's
+ * text_array when numeric_as_number is 0 (every piece is a string) and its
+ * numeric_array when it is 1 (a piece that does not parse stays a string, because
+ * dropping it would silently shorten the list). */
+int tdx_bonds_format_comma_array(tdx_buf *out, const tdx_bond_text *text, int numeric_as_number,
+                                 tdx_error *err);
+
 /* The reference's own name for a scale, for the summary. */
 const char *tdx_bonds_scale_name(tdx_bond_scale scale);
 

@@ -84,11 +84,11 @@ static void test_captured(void) {
           CONVERTIBLE_FIXTURE_ROWS, document.row_count);
     if (document.group_count != 1 || document.row_count != CONVERTIBLE_FIXTURE_ROWS)
         goto done;
-    CHECK(document.groups[0].column_count == CONVERTIBLE_FIXTURE_COLUMNS, "%d columns, got %zu",
-          CONVERTIBLE_FIXTURE_COLUMNS, document.groups[0].column_count);
-    CHECK(CONVERTIBLE_FIXTURE_SOURCE_ROWS == 314,
+    CHECK(document.groups[0].column_count == CONVERTIBLE_OVERVIEW_COLUMNS, "%d columns, got %zu",
+          CONVERTIBLE_OVERVIEW_COLUMNS, document.groups[0].column_count);
+    CHECK(CONVERTIBLE_OVERVIEW_SOURCE_ROWS == 314,
           "the capture this reduction came from held 314 rows, header says %d",
-          CONVERTIBLE_FIXTURE_SOURCE_ROWS);
+          CONVERTIBLE_OVERVIEW_SOURCE_ROWS);
 
     {
         size_t index;
