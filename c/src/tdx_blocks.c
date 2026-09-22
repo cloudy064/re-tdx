@@ -639,3 +639,99 @@ done:
     tdx_buf_free(&utf8);
     return status;
 }
+
+/* --- the member union -------------------------------------------------- */
+
+/* Finds a block by id, or NULL. */
+static const tdx_block *find_block(const tdx_block *blocks, size_t count, const char *id) {
+    size_t index;
+    for (index = 0; index < count; ++index)
+        if (strcmp(blocks[index].id, id) == 0)
+            return &blocks[index];
+    return NULL;
+}
+
+/* Whether a security is already among a block's emitted members. */
+static int already_present(const tdx_block_expanded_member *out, size_t count,
+                           const char *block_id, const char *security_id) {
+    size_t index;
+    for (index = 0; index < count; ++index)
+        if (strcmp(out[index].block_id, block_id) == 0 &&
+            strcmp(out[index].security_id, security_id) == 0)
+            return 1;
+    return 0;
+}
+
+int tdx_blocks_expand(const tdx_block *blocks, size_t block_count,
+                      const tdx_block_member *members, size_t member_count,
+                      tdx_block_expanded_member *out, size_t capacity, size_t *out_count,
+                      tdx_error *err) {
+    size_t stored = 0;
+    size_t index;
+
+    if (out_count)
+        *out_count = 0;
+    if (!blocks || !members || !out) {
+        tdx_error_set(err, "expanding the members needs blocks, members and an output");
+        return TDX_ERR;
+    }
+    /* Direct members first, so a security that is both its own and an ancestor's keeps the
+     * direct attribution. */
+    for (index = 0; index < member_count; ++index) {
+        tdx_block_expanded_member *item;
+        if (stored >= capacity) {
+            tdx_error_set(err, "the union holds more than %zu members", capacity);
+            return TDX_ERR;
+        }
+        item = &out[stored];
+        memset(item, 0, sizeof(*item));
+        snprintf(item->block_id, sizeof(item->block_id), "%s", members[index].block_id);
+        snprintf(item->family, sizeof(item->family), "%s", members[index].family);
+        item->market_id = members[index].market_id;
+        snprintf(item->code, sizeof(item->code), "%s", members[index].code);
+        snprintf(item->security_id, sizeof(item->security_id), "%s",
+                 members[index].security_id);
+        item->membership = TDX_BLOCKS_MEMBERSHIP_DIRECT;
+        stored++;
+    }
+    /* Then each block's ancestors, walking the parent chain to its end. */
+    for (index = 0; index < block_count; ++index) {
+        const tdx_block *ancestor = blocks[index].parent_id[0]
+                                        ? find_block(blocks, block_count, blocks[index].parent_id)
+                                        : NULL;
+        size_t depth = 0;
+        while (ancestor && depth < 64) {
+            size_t member;
+            for (member = 0; member < member_count; ++member) {
+                tdx_block_expanded_member *item;
+                if (strcmp(members[member].block_id, ancestor->id) != 0)
+                    continue;
+                if (already_present(out, stored, blocks[index].id, members[member].security_id))
+                    continue;
+                if (stored >= capacity) {
+                    tdx_error_set(err, "the union holds more than %zu members", capacity);
+                    return TDX_ERR;
+                }
+                item = &out[stored];
+                memset(item, 0, sizeof(*item));
+                snprintf(item->block_id, sizeof(item->block_id), "%s", blocks[index].id);
+                snprintf(item->family, sizeof(item->family), "%s", blocks[index].family);
+                item->market_id = members[member].market_id;
+                snprintf(item->code, sizeof(item->code), "%s", members[member].code);
+                snprintf(item->security_id, sizeof(item->security_id), "%s",
+                         members[member].security_id);
+                item->membership = TDX_BLOCKS_MEMBERSHIP_EXPANDED;
+                stored++;
+            }
+            /* The next ancestor up.  A cycle would be a malformed file; the depth cap stops it
+             * rather than looping forever. */
+            ancestor = ancestor->parent_id[0]
+                           ? find_block(blocks, block_count, ancestor->parent_id)
+                           : NULL;
+            depth++;
+        }
+    }
+    if (out_count)
+        *out_count = stored;
+    return TDX_OK;
+}

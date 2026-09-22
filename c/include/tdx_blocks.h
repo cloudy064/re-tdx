@@ -104,6 +104,27 @@ int tdx_blocks_source_level(const char *source_key, int *out);
  * the prefix is not one this reader knows. */
 const char *tdx_blocks_infoharbor_family(const char *prefix, size_t length);
 
+/* The member union: for every block, its own members plus those of its ANCESTORS, which is what
+ * the reference builds above hyzt.  Each emitted member says whether it came from the block
+ * itself ("direct") or from an ancestor ("expanded"), because a caller ranking by membership
+ * usually wants to know which. */
+typedef struct tdx_block_expanded_member {
+    char block_id[TDX_BLOCKS_ID_MAX];
+    char family[24];
+    int market_id;
+    char code[16];
+    char security_id[24];
+    const char *membership;
+} tdx_block_expanded_member;
+
+#define TDX_BLOCKS_MEMBERSHIP_DIRECT "direct"
+#define TDX_BLOCKS_MEMBERSHIP_EXPANDED "expanded"
+
+int tdx_blocks_expand(const tdx_block *blocks, size_t block_count,
+                      const tdx_block_member *members, size_t member_count,
+                      tdx_block_expanded_member *out, size_t capacity, size_t *out_count,
+                      tdx_error *err);
+
 /* Reads the three files from <root>/T0002/hq_cache.  Each part is optional: a file that is not
  * there leaves that family empty rather than failing, and the caller can see which were read. */
 typedef struct tdx_blocks_load_report {

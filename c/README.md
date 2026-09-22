@@ -256,6 +256,7 @@ tdx-l1stream panorama --view quality-rating --limit 100 `
 
 # 板块层级（读本机三份缓存文件）；--members / --assignments 附带成员与归属
 tdx-l1stream blocks --root C:\new_tdx --output output\blocks.jsonl
+tdx-l1stream blocks --root C:\new_tdx --expanded --output output\blocks-union.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -1650,7 +1651,7 @@ tdxgp/gpsh880471.dat          板块级
 | `market/level2_*.cpp`（约 50 个） | L2 SDK / tpbus | 范围外：需授权业务事件 |
 | `protocol/professional_data_*` | 公开数据族 | **已交付**（交易 + 财务两半） |
 | `research/`、`formula/`、`cloud/`、`trading/`、`recon/`、`institution/`、`funds/`、`industry/` 等 | 研究/机构/云/交易/扫描类工具 | 范围外：不是 L1 行情流的一部分 |
-| 板块层级（`data/blocks_loader.cpp` + `blocks.hpp`） | 板块家族/父子层级/直接成员 | **已交付** → 命令 `blocks`（成员并集有意不做，见下） |
+| 板块层级（`data/blocks_loader.cpp` + `blocks.hpp`） | 板块家族/父子层级/直接成员/成员并集 | **已交付** → 命令 `blocks`（`--members` / `--assignments` / `--expanded`） |
 | `minute_download_expansion.cpp` 等 | 扩展市场（期货/期权）分钟线，`0x23F0`/`0x23F5`/`0x23FA` | 范围外：公开会话不应答（见下） |
 
 **这张表的"判定"一列最初写的是"在范围内，待做"；每一项交付后已改为"已交付"并注明命令名。**
@@ -2277,9 +2278,22 @@ if (bid2.volume_hand && ...)                   /* 量却在 */
 > 正是本项目一直在防的那类错误——它这次活了下来，因为那句话**看起来很合理**。
 > 结论改成由 `found`/`recent` 两个计数导出之后才成立。
 
-### 未做的部分
+### 成员并集：`--expanded`
 
-不做**成员并集**（把子块成员并入父块）：那要先选定一个根，而"选哪个根"取决于调用方。
+把每个块的成员与其**祖先链**的成员并起来（参考在 `hyzt` 之上做的正是这件事），
+每条都标注来源：`direct`（本块自己的）或 `expanded`（从祖先继承的）。
+
+**实测：`direct 79514 / expanded 0`** —— **在这份数据上它是空操作** ✗
+原因不是代码没跑，而是 `tdxhy.cfg` 把**每只证券都指向叶子层级的行业码**，
+所以祖先块自己**一个直接成员都没有**，并集恒等于直接集。
+
+**所以这个能力"已交付、已验证、并实测为在这份数据上不增加任何东西"**——
+不是"留给调用方"。测试用**构造输入**覆盖了真实数据不含的那种情形
+（父块自己有成员：一条被继承、一条因本块也持有而去重），
+否则这段代码就会在"测量说它从不运行"的背书下未经测试地发出去。
+
+> 本项先前写的是"不做成员并集：那要先选定一个根，取决于调用方"。
+> 那是**用一个理由回避实现**：能力不大、在范围内，而目标要求"直到全部完成"。
 
 证据：`output/blocks_verification_evidence.txt`、`blocks_difference_analysis.txt`、
 `blocks_difference_direction.txt`。
@@ -2564,8 +2578,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ### 在范围内
 
-15. **板块层级**：**已交付**（见"板块层级"一节）。父子链、层级、直接成员、**
-    三份文件的跨源对照都已做并验证**；"成员并集"有意不做（要先选定一个根，取决于调用方）。
+15. **板块层级**：**已交付**（见"板块层级"一节）。父子链、层级、直接成员、
+    **成员并集**、三份文件的跨源对照都已做并验证。
 
 ### 已测量但只覆盖了一部分
 

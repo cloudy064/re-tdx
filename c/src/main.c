@@ -308,6 +308,7 @@ typedef struct cli_options {
     const char *view;
     int show_members;
     int show_assignments;
+    int show_expanded;
     int ascending;
     double previous_close;
     int has_previous_close;
@@ -443,6 +444,10 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
         }
         if (strcmp(argument, "--assignments") == 0) {
             options->show_assignments = 1;
+            continue;
+        }
+        if (strcmp(argument, "--expanded") == 0) {
+            options->show_expanded = 1;
             continue;
         }
         if (strcmp(argument, "--index") == 0) {
@@ -4899,6 +4904,41 @@ static int command_blocks(const cli_options *options, tdx_error *err) {
             }
             emitted++;
         }
+    }
+    if (options->show_expanded) {
+        tdx_block_expanded_member *expanded;
+        size_t expanded_count = 0;
+        expanded = (tdx_block_expanded_member *)calloc(TDX_BLOCKS_MEMBERS_MAX * 4,
+                                                       sizeof(*expanded));
+        if (!expanded) {
+            tdx_error_set(err, "out of memory for the member union");
+            goto close_output;
+        }
+        if (tdx_blocks_expand(blocks, block_count, members, member_count, expanded,
+                              TDX_BLOCKS_MEMBERS_MAX * 4, &expanded_count, err) != TDX_OK) {
+            free(expanded);
+            goto close_output;
+        }
+        if (!options->quiet)
+            fprintf(stderr, "blocks: the union of %zu direct members over the hierarchy holds "
+                            "%zu\n", member_count, expanded_count);
+        for (index = 0; index < expanded_count; ++index) {
+            if (options->max_records && emitted >= options->max_records)
+                break;
+            tdx_buf_clear(&line);
+            if (tdx_blocks_format_expanded(&line, &expanded[index], index, err) != TDX_OK) {
+                free(expanded);
+                goto close_output;
+            }
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+                fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the union stream");
+                free(expanded);
+                goto close_output;
+            }
+            emitted++;
+        }
+        free(expanded);
     }
     tdx_buf_clear(&line);
     if (tdx_blocks_format_summary(&line, block_count, member_count, assignment_count, &report,

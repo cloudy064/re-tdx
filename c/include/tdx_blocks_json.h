@@ -25,6 +25,10 @@ int tdx_blocks_format_member(tdx_buf *out, const tdx_block_member *member, size_
 int tdx_blocks_format_assignment(tdx_buf *out, const tdx_block_assignment *assignment,
                                  size_t index, tdx_error *err);
 
+/* One member of the union, with whether it came from the block itself or an ancestor. */
+int tdx_blocks_format_expanded(tdx_buf *out, const tdx_block_expanded_member *member,
+                               size_t index, tdx_error *err);
+
 /* The trailing summary.  The load report is part of it: which files were read, and how many
  * infoharbor blocks declared a member count that did not match what followed. */
 int tdx_blocks_format_summary(tdx_buf *out, size_t blocks, size_t members, size_t assignments,

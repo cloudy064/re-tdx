@@ -298,6 +298,107 @@ static void test_infoharbor(void) {
     }
 }
 
+/* THE LIVE DATA MAKES THIS A NO-OP, which is exactly why it needs a constructed case: every
+ * assignment in tdxhy.cfg points at a leaf, so no ancestor contributes a member and the union
+ * equals the direct set everywhere.  The case below gives the parent members of its own. */
+static void test_expansion(void) {
+    tdx_block blocks[4];
+    tdx_block_member members[8];
+    tdx_block_expanded_member out[16];
+    size_t out_count = 0;
+    size_t index;
+    size_t direct = 0;
+    size_t expanded = 0;
+
+    memset(blocks, 0, sizeof(blocks));
+    memset(members, 0, sizeof(members));
+    /* A parent that holds one security of its own, and a child that holds two. */
+    snprintf(blocks[0].id, sizeof(blocks[0].id), "industry:T01");
+    snprintf(blocks[0].source_key, sizeof(blocks[0].source_key), "T01");
+    blocks[0].level = 1;
+    snprintf(blocks[1].id, sizeof(blocks[1].id), "industry:T0101");
+    snprintf(blocks[1].parent_id, sizeof(blocks[1].parent_id), "industry:T01");
+    snprintf(blocks[1].source_key, sizeof(blocks[1].source_key), "T0101");
+    blocks[1].level = 2;
+
+    snprintf(members[0].block_id, sizeof(members[0].block_id), "industry:T01");
+    snprintf(members[0].security_id, sizeof(members[0].security_id), "SZ000001");
+    snprintf(members[0].code, sizeof(members[0].code), "000001");
+    snprintf(members[1].block_id, sizeof(members[1].block_id), "industry:T0101");
+    snprintf(members[1].security_id, sizeof(members[1].security_id), "SH600519");
+    snprintf(members[1].code, sizeof(members[1].code), "600519");
+    members[1].market_id = 1;
+    snprintf(members[2].block_id, sizeof(members[2].block_id), "industry:T0101");
+    snprintf(members[2].security_id, sizeof(members[2].security_id), "SZ000001");
+    snprintf(members[2].code, sizeof(members[2].code), "000001");
+    /* A second security the PARENT holds and the child does not: this one must be inherited.
+     * The one above is held by both, so it must NOT be inherited a second time - the two
+     * together are what make the dedup visible. */
+    snprintf(members[3].block_id, sizeof(members[3].block_id), "industry:T01");
+    snprintf(members[3].security_id, sizeof(members[3].security_id), "SH600000");
+    snprintf(members[3].code, sizeof(members[3].code), "600000");
+    members[3].market_id = 1;
+
+    error.message[0] = '\0';
+    CHECK(tdx_blocks_expand(blocks, 2, members, 4, out, 16, &out_count, &error) == TDX_OK,
+          "expand: %s", error.message);
+    for (index = 0; index < out_count; ++index) {
+        if (strcmp(out[index].membership, TDX_BLOCKS_MEMBERSHIP_DIRECT) == 0)
+            direct++;
+        else
+            expanded++;
+    }
+    CHECK(direct == 4, "the four direct members are all present, got %zu", direct);
+    /* ONE INHERITED, ONE DEDUPED.  The child inherits 600000, which only its parent holds, and
+     * does NOT get a second copy of 000001, which it holds itself.  So exactly one expanded
+     * entry - and the count is the check on both branches at once. */
+    CHECK(expanded == 1, "the child inherits exactly one and dedups the other, got %zu",
+          expanded);
+    for (index = 0; index < out_count; ++index)
+        if (strcmp(out[index].membership, TDX_BLOCKS_MEMBERSHIP_EXPANDED) == 0) {
+            CHECK(strcmp(out[index].block_id, "industry:T0101") == 0,
+                  "the inherited one belongs to the child, got %s", out[index].block_id);
+            CHECK(strcmp(out[index].security_id, "SH600000") == 0,
+                  "and is the one the child does not hold, got %s", out[index].security_id);
+        }
+    /* The parent keeps its own as DIRECT: attribution follows where the security actually is. */
+    for (index = 0; index < out_count; ++index)
+        if (strcmp(out[index].security_id, "SZ000001") == 0 &&
+            strcmp(out[index].block_id, "industry:T01") == 0)
+            CHECK(strcmp(out[index].membership, TDX_BLOCKS_MEMBERSHIP_DIRECT) == 0,
+                  "the parent's own member stays direct");
+
+    /* A block with no parent contributes nothing beyond its own members. */
+    {
+        tdx_block orphan[1];
+        tdx_block_expanded_member small[4];
+        size_t small_count = 0;
+        memset(orphan, 0, sizeof(orphan));
+        snprintf(orphan[0].id, sizeof(orphan[0].id), "industry:T01");
+        CHECK(tdx_blocks_expand(orphan, 1, members, 4, small, 8, &small_count, &error) == TDX_OK,
+              "expand: %s", error.message);
+        CHECK(small_count == 4, "four direct members and nothing inherited, got %zu",
+              small_count);
+    }
+    /* A CYCLE IS MALFORMED BUT MUST NOT HANG: the walk is capped. */
+    {
+        tdx_block loop[2];
+        tdx_block_expanded_member small[64];
+        size_t small_count = 0;
+        memset(loop, 0, sizeof(loop));
+        snprintf(loop[0].id, sizeof(loop[0].id), "industry:A");
+        snprintf(loop[0].parent_id, sizeof(loop[0].parent_id), "industry:B");
+        snprintf(loop[1].id, sizeof(loop[1].id), "industry:B");
+        snprintf(loop[1].parent_id, sizeof(loop[1].parent_id), "industry:A");
+        error.message[0] = '\0';
+        CHECK(tdx_blocks_expand(loop, 2, members, 3, small, 64, &small_count,
+                                &error) == TDX_OK,
+              "a cycle terminates rather than hanging: %s", error.message);
+    }
+    CHECK(tdx_blocks_expand(NULL, 0, members, 1, out, 16, &out_count, &error) == TDX_ERR,
+          "no blocks is refused");
+}
+
 static void test_rendering(void) {
     static const char *text =
         "parent|880301|2|5|0|T0101\n"
@@ -353,6 +454,23 @@ static void test_rendering(void) {
     CHECK(render_parses(text_of(&line), reason, sizeof(reason)),
           "the assignment parses: %s\n    %s", reason, text_of(&line));
 
+    {
+        tdx_block_expanded_member expanded;
+        memset(&expanded, 0, sizeof(expanded));
+        snprintf(expanded.block_id, sizeof(expanded.block_id), "industry:T0101");
+        snprintf(expanded.family, sizeof(expanded.family), "industry");
+        snprintf(expanded.security_id, sizeof(expanded.security_id), "SZ000001");
+        snprintf(expanded.code, sizeof(expanded.code), "000001");
+        expanded.membership = TDX_BLOCKS_MEMBERSHIP_EXPANDED;
+        tdx_buf_clear(&line);
+        CHECK(tdx_blocks_format_expanded(&line, &expanded, 0, &error) == TDX_OK,
+              "render: %s", error.message);
+        CHECK(render_parses(text_of(&line), reason, sizeof(reason)),
+              "the expanded member parses: %s\n    %s", reason, text_of(&line));
+        CHECK(strstr(text_of(&line), "\"membership\":\"expanded\"") != NULL,
+              "and says where it came from: %s", text_of(&line));
+    }
+
     memset(&report, 0, sizeof(report));
     report.industry_catalog_read = 1;
     report.infoharbor_read = 1;
@@ -376,6 +494,7 @@ int main(void) {
     test_industry_catalog();
     test_assignments();
     test_infoharbor();
+    test_expansion();
     test_rendering();
 
     if (failures) {

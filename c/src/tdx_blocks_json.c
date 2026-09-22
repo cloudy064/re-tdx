@@ -136,3 +136,26 @@ int tdx_blocks_format_summary(tdx_buf *out, size_t blocks, size_t members, size_
     }
     return tdx_buf_push(out, '}', err);
 }
+
+int tdx_blocks_format_expanded(tdx_buf *out, const tdx_block_expanded_member *member,
+                               size_t index, tdx_error *err) {
+    if (!out || !member) {
+        tdx_error_set(err, "rendering an expanded member needs a buffer and a member");
+        return TDX_ERR;
+    }
+    if (BLK_LITERAL(out, err, "{\"type\":\"block_expanded_member\",\"index\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append_printf(out, err, "%zu,\"block_id\":", index) != TDX_OK)
+        return TDX_ERR;
+    if (tdx_format_json_string(out, member->block_id, err) != TDX_OK)
+        return TDX_ERR;
+    if (BLK_LITERAL(out, err, ",\"family\":") != TDX_OK ||
+        tdx_format_json_string(out, member->family, err) != TDX_OK)
+        return TDX_ERR;
+    if (BLK_LITERAL(out, err, ",\"membership\":") != TDX_OK ||
+        tdx_format_json_string(out, member->membership, err) != TDX_OK)
+        return TDX_ERR;
+    return tdx_buf_append_printf(out, err,
+                                 ",\"security_id\":\"%s\",\"market_id\":%d,\"code\":\"%s\"}",
+                                 member->security_id, member->market_id, member->code);
+}
