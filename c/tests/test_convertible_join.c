@@ -62,17 +62,25 @@ static const char *bond_text(const tdx_bond_text *text) {
     return scratch;
 }
 
-static tdx_jsn_document documents[6];
+/* Eight: the six core documents plus the exchangeable substitute and the projection.
+ * Leaving this at six while the loops ran to eight wrote past the array, and the
+ * compiler then reported an impossible `expected` value for index 7 - undefined
+ * behaviour does not announce itself, it just produces nonsense. */
+static tdx_jsn_document documents[8];
 static tdx_convertible_documents set;
 
 static int load_all(void) {
-    static const char *const texts[6] = {
-        convertible_overview,  convertible_progress, convertible_coupons,
-        convertible_sellback,  convertible_redemption, convertible_revision,
+    /* Six core documents, then the exchangeable substitute overview and the
+     * projection; the array sizes follow tdx_convertible_documents. */
+    static const char *const texts[8] = {
+        convertible_overview,  convertible_progress,
+        convertible_coupons,   convertible_sellback,
+        convertible_redemption, convertible_revision,
+        convertible_exchangeable, convertible_projection,
     };
     size_t index;
     error.message[0] = '\0';
-    for (index = 0; index < 6; ++index) {
+    for (index = 0; index < 8; ++index) {
         tdx_jsn_document_init(&documents[index]);
         if (tdx_jsn_parse((const uint8_t *)texts[index], strlen(texts[index]), &documents[index],
                           &error) != TDX_OK) {
@@ -80,13 +88,20 @@ static int load_all(void) {
             failures++;
             return TDX_ERR;
         }
-        if (documents[index].group_count != 1 ||
-            documents[index].row_count != CONVERTIBLE_FIXTURE_ROWS) {
-            printf("FAIL document %zu holds %zu groups and %zu rows, expected 1 and %d\n", index,
-                   documents[index].group_count, documents[index].row_count,
-                   CONVERTIBLE_FIXTURE_ROWS);
-            failures++;
-            return TDX_ERR;
+        /* The six core documents were reduced to the same three bonds; the two extra
+         * ones are small enough to be embedded whole. */
+        {
+            size_t expected = index < 6 ? CONVERTIBLE_FIXTURE_ROWS
+                                        : (index == 6 ? CONVERTIBLE_EXCHANGEABLE_SOURCE_ROWS
+                                                      : CONVERTIBLE_PROJECTION_SOURCE_ROWS);
+            if (documents[index].group_count != 1 ||
+                documents[index].row_count != expected) {
+                printf("FAIL document %zu holds %zu groups and %zu rows, expected 1 and %zu\n",
+                       index, documents[index].group_count, documents[index].row_count,
+                       expected);
+                failures++;
+                return TDX_ERR;
+            }
         }
     }
     set.overview = &documents[0];
@@ -95,12 +110,14 @@ static int load_all(void) {
     set.sellback = &documents[3];
     set.redemption = &documents[4];
     set.revision = &documents[5];
+    set.exchangeable = &documents[6];
+    set.projection = &documents[7];
     return TDX_OK;
 }
 
 static void free_all(void) {
     size_t index;
-    for (index = 0; index < 6; ++index)
+    for (index = 0; index < 8; ++index)
         tdx_jsn_document_free(&documents[index]);
 }
 
@@ -137,20 +154,24 @@ static void test_union(void) {
 
     CHECK(tdx_convertible_keys(&set, keys, 64, &key_count, &union_count, &error) == TDX_OK,
           "keys: %s", error.message);
-    /* Every document carries the same three bonds, so the union is three, not
-     * eighteen. */
-    CHECK(union_count == 3, "the union of the six documents is 3 bonds, got %zu", union_count);
-    CHECK(key_count == 3, "and three keys were written, got %zu", key_count);
-    if (union_count == 3) {
+    /* The six core documents all carry the same three bonds, so they contribute three
+     * keys rather than eighteen - and the two extra documents contribute their own
+     * two, which is why the union is five and not three. */
+    CHECK(union_count == 5, "the union is 5 bonds (3 core + 2 exchangeable), got %zu",
+          union_count);
+    CHECK(key_count == 5, "and five keys were written, got %zu", key_count);
+    if (union_count == 5) {
         CHECK(keys[0].market_id == 1 && strcmp(keys[0].code, "110075") == 0,
               "the first key is SH110075, got %d/%s", keys[0].market_id, keys[0].code);
         CHECK(keys[2].market_id == 1 && strcmp(keys[2].code, "110077") == 0,
-              "the last key is SH110077, got %d/%s", keys[2].market_id, keys[2].code);
+              "the third key is SH110077, got %d/%s", keys[2].market_id, keys[2].code);
+        CHECK(strcmp(keys[3].code, "132024") == 0 && strcmp(keys[4].code, "132026") == 0,
+              "and the exchangeable bonds follow, got %s and %s", keys[3].code, keys[4].code);
     }
     /* A capacity too small is refused rather than silently truncated. */
     CHECK(tdx_convertible_keys(&set, keys, 2, &key_count, &union_count, &error) == TDX_ERR,
           "a short key buffer must be refused");
-    CHECK(union_count == 3, "and the union count still reports 3, got %zu", union_count);
+    CHECK(union_count == 5, "and the union count still reports 5, got %zu", union_count);
 }
 
 static void test_join_all_six(void) {
@@ -288,7 +309,8 @@ static void test_join_only_elsewhere(void) {
     error.message[0] = '\0';
     CHECK(tdx_convertible_join(&set, &missing, &row, &extra, &flags, &error) == TDX_ERR,
           "a bond in none of the documents must be refused");
-    CHECK(strstr(error.message, "none of the six") != NULL, "the error says why: %s",
+    CHECK(strstr(error.message, "none of the documents") != NULL,
+          "the error says why: %s",
           error.message);
 
     /* A document set with only one document still joins, and reports the rest as
@@ -377,6 +399,109 @@ static void test_rendering(void) {
     tdx_buf_free(&line);
 }
 
+/* SH132024 is described by the exchangeable document AND the projection, and the two
+ * disagree in a way that pins both precedence rules:
+ *
+ *   SYNX  4.547945 in the exchangeable row, 4.548 in the projection
+ *   DQSHJ 105.0000 only in the projection - the exchangeable document has no column
+ *   LLZH  0.0400   only in the projection
+ *
+ * So the remaining years must come from the primary even though the projection also
+ * has a value, while the two fields the primary cannot supply must come from the
+ * projection.  Applying either document the other's way would fail one of those. */
+static void test_exchangeable_and_projection(void) {
+    tdx_convertible_row row;
+    tdx_convertible_extra extra;
+    tdx_convertible_join_flags flags;
+    tdx_code identity = code_of(1, "132024");
+
+    CHECK(tdx_convertible_join(&set, &identity, &row, &extra, &flags, &error) == TDX_OK,
+          "join: %s", error.message);
+    /* The code starts with 132, which is how the reference decides the instrument
+     * kind - independently of which document carried the bond. */
+    CHECK(row.kind == TDX_CONVERTIBLE_EXCHANGEABLE, "132024 is an exchangeable bond");
+    CHECK(flags.exchangeable_supplemented == 1,
+          "the exchangeable document described it, so it replaced the overview row");
+    CHECK(flags.exchangeable_projection_verified == 1, "and the projection described it too");
+    /* The overview fixture does not carry this bond, so nothing came from there. */
+    CHECK(flags.from_overview == 0, "the overview document did not carry it");
+
+    /* From the exchangeable row. */
+    CHECK(row.has_face_value && row.face_value == 100.0, "the face value is 100, got %f",
+          row.face_value);
+    CHECK(row.has_conversion_price && row.conversion_price > 52.39 &&
+              row.conversion_price < 52.41,
+          "the conversion price is 52.40, got %f", row.conversion_price);
+    CHECK(strcmp(bond_text(&row.maturity_date), "20310409") == 0,
+          "it matures 20310409, got %s", bond_text(&row.maturity_date));
+    CHECK(strcmp(bond_text(&row.listing_date), "20260420") == 0,
+          "the listing date is 20260420, got %s", bond_text(&row.listing_date));
+    /* THE PRIMARY WINS: the projection also carries SYNX, with less precision, and it
+     * must not have replaced this. */
+    CHECK(row.has_remaining_years && row.remaining_years > 4.5479 &&
+              row.remaining_years < 4.5480,
+          "remaining years come from the exchangeable row (4.547945), not the projection's "
+          "4.548, got %f",
+          row.remaining_years);
+    CHECK(row.has_redemption_trigger_ratio_pct && row.redemption_trigger_ratio_pct == 120.0,
+          "the redemption trigger is 120 per cent, got %f",
+          row.redemption_trigger_ratio_pct);
+    /* The exchangeable row has no sellback trigger, and the projection has no value
+     * for it either, so it stays absent rather than becoming zero. */
+    CHECK(row.has_sellback_trigger_ratio_pct == 0,
+          "the sellback trigger is absent in both documents, so it is absent here");
+
+    /* THE FALLBACK: two fields only the projection has. */
+    CHECK(row.has_maturity_redemption_price && row.maturity_redemption_price == 105.0,
+          "the maturity redemption price comes from the projection (105), got %f",
+          row.maturity_redemption_price);
+    CHECK(row.has_unpaid_coupon_sum && row.unpaid_coupon_sum > 0.039 &&
+              row.unpaid_coupon_sum < 0.041,
+          "so does the unpaid coupon sum (0.04), got %f", row.unpaid_coupon_sum);
+    CHECK(flags.projection_fields_used == 2,
+          "exactly two fields came from the projection, got %zu", flags.projection_fields_used);
+    /* The completeness test is re-evaluated after the fallback. */
+    CHECK(row.core_terms_complete == 1,
+          "the core terms are complete once the fallback has run");
+}
+
+/* SH132026 pins the other half of the fallback rule: the projection supplies the one
+ * field the exchangeable row cannot (a maturity redemption price of 108) and nothing
+ * else, and an EMPTY projection value supplies nothing rather than zero. */
+static void test_projection_supplies_only_what_is_missing(void) {
+    tdx_convertible_row row;
+    tdx_convertible_extra extra;
+    tdx_convertible_join_flags flags;
+    tdx_code identity = code_of(1, "132026");
+
+    CHECK(tdx_convertible_join(&set, &identity, &row, &extra, &flags, &error) == TDX_OK,
+          "join: %s", error.message);
+    CHECK(flags.exchangeable_supplemented == 1, "132026 is in the exchangeable document");
+    CHECK(flags.exchangeable_projection_verified == 1, "and in the projection");
+    CHECK(row.kind == TDX_CONVERTIBLE_EXCHANGEABLE, "and its code marks it exchangeable");
+    /* The exchangeable row has no column for this, so the projection's 108 is used. */
+    CHECK(row.has_maturity_redemption_price && row.maturity_redemption_price == 108.0,
+          "the projection supplies the 108 maturity redemption price, got has=%d value=%f",
+          row.has_maturity_redemption_price, row.maturity_redemption_price);
+    /* The projection's LLZH column is empty for this bond, so the field stays absent
+     * rather than becoming zero. */
+    CHECK(row.has_unpaid_coupon_sum == 0,
+          "an empty projection value supplies nothing, so the sum is absent not zero");
+    CHECK(flags.projection_fields_used == 1,
+          "exactly one field came from the projection, got %zu", flags.projection_fields_used);
+    /* What the primary had is untouched. */
+    CHECK(row.has_conversion_price && row.conversion_price > 21.19 &&
+              row.conversion_price < 21.21,
+          "the conversion price is the primary's 21.20, got %f", row.conversion_price);
+    CHECK(row.has_remaining_years && row.remaining_years > 0.690409 &&
+              row.remaining_years < 0.690411,
+          "and the remaining years are the primary's 0.690410, not the projection's 0.690, "
+          "got %f",
+          row.remaining_years);
+    CHECK(row.has_sellback_trigger_ratio_pct && row.sellback_trigger_ratio_pct == 70.0,
+          "the sellback trigger is 70 per cent, got %f", row.sellback_trigger_ratio_pct);
+}
+
 int main(void) {
     test_document_shapes();
     if (load_all() != TDX_OK) {
@@ -387,6 +512,8 @@ int main(void) {
     test_join_all_six();
     test_cross_document_coupons();
     test_join_only_elsewhere();
+    test_exchangeable_and_projection();
+    test_projection_supplies_only_what_is_missing();
     test_rendering();
     free_all();
 

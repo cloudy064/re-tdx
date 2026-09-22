@@ -2327,12 +2327,16 @@ close_output:
 /* The six documents one at a time, then the join.  Each transfer verifies its own
  * digest, so a short or reordered chunk stream cannot look like a whole document. */
 static int command_convertible(const cli_options *options, tdx_error *err) {
-    static const char *const resources[6] = {
-        TDX_CONVERTIBLE_OVERVIEW_RESOURCE,  TDX_CONVERTIBLE_PROGRESS_RESOURCE,
-        TDX_CONVERTIBLE_COUPONS_RESOURCE,   TDX_CONVERTIBLE_SELLBACK_RESOURCE,
+    /* Six core documents, then the exchangeable-bond substitute overview and the
+     * projection that fills only the ten fields the reference allows it to fill. */
+    static const char *const resources[8] = {
+        TDX_CONVERTIBLE_OVERVIEW_RESOURCE,   TDX_CONVERTIBLE_PROGRESS_RESOURCE,
+        TDX_CONVERTIBLE_COUPONS_RESOURCE,    TDX_CONVERTIBLE_SELLBACK_RESOURCE,
         TDX_CONVERTIBLE_REDEMPTION_RESOURCE, TDX_CONVERTIBLE_REVISION_RESOURCE,
+        TDX_CONVERTIBLE_EXCHANGEABLE_RESOURCE,
+        TDX_CONVERTIBLE_EXCHANGEABLE_PROJECTION_RESOURCE,
     };
-    static tdx_jsn_document documents[6];
+    static tdx_jsn_document documents[8];
     static tdx_buf raw;
     static tdx_buf utf8;
     static tdx_buf line;
@@ -2353,6 +2357,9 @@ static int command_convertible(const cli_options *options, tdx_error *err) {
     size_t from_overview = 0;
     size_t only_elsewhere = 0;
     size_t sold_by_overview = 0;
+    size_t supplemented = 0;
+    size_t projection_verified = 0;
+    size_t projection_fields = 0;
     int status = TDX_ERR;
 
     stream = open_output(options);
@@ -2365,10 +2372,10 @@ static int command_convertible(const cli_options *options, tdx_error *err) {
     tdx_buf_init(&utf8);
     tdx_buf_init(&line);
     memset(endpoint, 0, sizeof(endpoint));
-    for (index = 0; index < 6; ++index)
+    for (index = 0; index < 8; ++index)
         tdx_jsn_document_init(&documents[index]);
 
-    for (index = 0; index < 6; ++index) {
+    for (index = 0; index < 8; ++index) {
         memset(&info, 0, sizeof(info));
         tdx_buf_clear(&raw);
         tdx_buf_clear(&utf8);
@@ -2392,11 +2399,13 @@ static int command_convertible(const cli_options *options, tdx_error *err) {
     set.sellback = &documents[3];
     set.redemption = &documents[4];
     set.revision = &documents[5];
+    set.exchangeable = &documents[6];
+    set.projection = &documents[7];
     if (tdx_convertible_keys(&set, keys, TDX_CONVERTIBLE_KEYS_MAX, &key_count, &union_count,
                              err) != TDX_OK)
         goto close_output;
     if (!options->quiet)
-        fprintf(stderr, "convertible: the six documents name %zu distinct bonds\n",
+        fprintf(stderr, "convertible: the eight documents name %zu distinct bonds\n",
                 union_count);
 
     for (index = 0; index < key_count; ++index) {
@@ -2427,16 +2436,23 @@ static int command_convertible(const cli_options *options, tdx_error *err) {
             only_elsewhere++;
         if (flags.from_overview && extra.has_remaining_balance_100m_yuan)
             sold_by_overview++;
+        if (flags.exchangeable_supplemented)
+            supplemented++;
+        if (flags.exchangeable_projection_verified)
+            projection_verified++;
+        projection_fields += flags.projection_fields_used;
     }
 
     tdx_buf_clear(&line);
     if (tdx_buf_append_printf(&line, err,
-                              "{\"type\":\"convertible_join_summary\",\"documents\":6,"
+                              "{\"type\":\"convertible_join_summary\",\"documents\":8,"
                               "\"endpoint\":\"%s\",\"union_keys\":%zu,\"rows\":%zu,"
                               "\"rows_core_terms_complete\":%zu,\"rows_from_overview\":%zu,"
-                              "\"rows_only_elsewhere\":%zu}",
+                              "\"rows_only_elsewhere\":%zu,\"rows_exchangeable_supplemented\":%zu,"
+                              "\"rows_projection_verified\":%zu,\"projection_fields_used\":%zu}",
                               endpoint, union_count, emitted, complete, from_overview,
-                              only_elsewhere) != TDX_OK)
+                              only_elsewhere, supplemented, projection_verified,
+                              projection_fields) != TDX_OK)
         goto close_output;
     if (tdx_buf_push(&line, '\n', err) != TDX_OK)
         goto close_output;
@@ -2449,7 +2465,7 @@ static int command_convertible(const cli_options *options, tdx_error *err) {
 close_output:
     if (options->output)
         fclose(stream);
-    for (index = 0; index < 6; ++index)
+    for (index = 0; index < 8; ++index)
         tdx_jsn_document_free(&documents[index]);
     tdx_buf_free(&raw);
     tdx_buf_free(&utf8);
@@ -2457,9 +2473,10 @@ close_output:
     if (status != TDX_OK)
         return status;
     if (!options->quiet)
-        fprintf(stderr, "convertible: %zu of %zu bonds joined, %zu only in a non-overview "
-                        "document\n",
-                emitted, union_count, only_elsewhere);
+        fprintf(stderr,
+                "convertible: %zu of %zu bonds joined, %zu only in a non-overview document, "
+                "%zu exchangeable, %zu projection fields used\n",
+                emitted, union_count, only_elsewhere, supplemented, projection_fields);
     return status;
 }
 

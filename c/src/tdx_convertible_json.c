@@ -301,6 +301,22 @@ static int append_source_flags(tdx_buf *out, const tdx_convertible_join_flags *f
     if (tdx_buf_append(out, flags->from_revision ? "true" : "false",
                        flags->from_revision ? 4 : 5, err) != TDX_OK)
         return TDX_ERR;
+    /* The two documents that do more than carry a row: one replaces the overview row,
+     * the other fills gaps in it.  Neither is visible from the six `from_*` flags, so
+     * a caller that needs to know whether a value was primary or inferred reads these. */
+    if (APPEND_LITERAL(out, err, ",\"exchangeable_substituted\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append(out, flags->exchangeable_supplemented ? "true" : "false",
+                       flags->exchangeable_supplemented ? 4 : 5, err) != TDX_OK)
+        return TDX_ERR;
+    if (APPEND_LITERAL(out, err, ",\"projection_verified\":") != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append(out, flags->exchangeable_projection_verified ? "true" : "false",
+                       flags->exchangeable_projection_verified ? 4 : 5, err) != TDX_OK)
+        return TDX_ERR;
+    if (tdx_buf_append_printf(out, err, ",\"projection_fields_used\":%zu",
+                              flags->projection_fields_used) != TDX_OK)
+        return TDX_ERR;
     return tdx_buf_push(out, '}', err);
 }
 

@@ -105,6 +105,8 @@ int tdx_convertible_join(const tdx_convertible_documents *documents, const tdx_c
     source_row sellback;
     source_row redemption;
     source_row revision;
+    source_row exchangeable;
+    source_row projection;
     size_t index;
 
     if (!documents || !identity || !out || !extra || !flags) {
@@ -120,6 +122,21 @@ int tdx_convertible_join(const tdx_convertible_documents *documents, const tdx_c
     }
     overview = locate(documents->overview, identity->market_id, identity->code,
                       strlen(identity->code));
+    exchangeable = locate(documents->exchangeable, identity->market_id, identity->code,
+                          strlen(identity->code));
+    projection = locate(documents->projection, identity->market_id, identity->code,
+                        strlen(identity->code));
+    /* from_overview is decided BEFORE the substitution below, because it means "the
+     * overview document carried this bond" - not "the overview fields were available".
+     * Conflating the two reported an exchangeable bond as an overview one. */
+    flags->from_overview = overview.row >= 0;
+    /* The exchangeable document is a SUBSTITUTE overview: when it names the bond, its
+     * row is what the overview fields are read from. */
+    if (exchangeable.row >= 0) {
+        overview = exchangeable;
+        flags->exchangeable_supplemented = 1;
+    }
+    flags->exchangeable_projection_verified = projection.row >= 0;
     progress = locate(documents->progress, identity->market_id, identity->code,
                       strlen(identity->code));
     coupons = locate(documents->coupons, identity->market_id, identity->code,
@@ -131,15 +148,15 @@ int tdx_convertible_join(const tdx_convertible_documents *documents, const tdx_c
     revision = locate(documents->revision, identity->market_id, identity->code,
                       strlen(identity->code));
 
-    flags->from_overview = overview.row >= 0;
     flags->from_progress = progress.row >= 0;
     flags->from_coupons = coupons.row >= 0;
     flags->from_sellback = sellback.row >= 0;
     flags->from_redemption = redemption.row >= 0;
     flags->from_revision = revision.row >= 0;
     if (overview.row < 0 && progress.row < 0 && coupons.row < 0 && sellback.row < 0 &&
-        redemption.row < 0 && revision.row < 0) {
-        tdx_error_set(err, "the bond %d/%s appears in none of the six documents",
+        redemption.row < 0 && revision.row < 0 && exchangeable.row < 0 &&
+        projection.row < 0) {
+        tdx_error_set(err, "the bond %d/%s appears in none of the documents",
                       identity->market_id, identity->code);
         return TDX_ERR;
     }
@@ -149,8 +166,12 @@ int tdx_convertible_join(const tdx_convertible_documents *documents, const tdx_c
      * would refuse the identity, so the fields are simply left absent instead. */
     memset(out, 0, sizeof(*out));
     if (overview.row >= 0) {
-        if (tdx_convertible_normalize(documents->overview, overview.group,
-                                      (size_t)overview.row, out, err) != TDX_OK)
+        /* overview.doc, NOT documents->overview: when the exchangeable document
+         * supplied the row, the row index belongs to THAT document.  Passing the
+         * overview here read whichever row happened to sit at the same index in a
+         * different document, which produced another bond's terms. */
+        if (tdx_convertible_normalize(overview.doc, overview.group, (size_t)overview.row, out,
+                                      err) != TDX_OK)
             return TDX_ERR;
     } else {
         /* Build the identity by hand, since there is no overview row to read it
@@ -171,10 +192,11 @@ int tdx_convertible_join(const tdx_convertible_documents *documents, const tdx_c
     }
     /* The name can also come from a document other than the overview. */
     if (!out->bond_name.present) {
-        static const char *const name_keys[] = {"ZQJC"};
-        out->bond_name = tdx_bonds_first_cell_text(progress.doc, progress.group,
-                                                   progress.row >= 0 ? (size_t)progress.row : 0,
-                                                   name_keys, 1);
+        /* row_text reports absence when the document did not carry the bond, instead
+         * of reading row 0 of a document that does not describe it. */
+        out->bond_name = row_text(&progress, "ZQJC");
+        if (!out->bond_name.present)
+            out->bond_name = row_text(&coupons, "ZQJC");
     }
 
     /* progress */
@@ -210,6 +232,66 @@ int tdx_convertible_join(const tdx_convertible_documents *documents, const tdx_c
     read_trigger(&redemption, "SHQSRQ", "SHJG", "YCFCS", "YSHRQ", "SHCFSYTS",
                  &extra->redemption);
     read_trigger(&revision, "XZQSRQ", "CFJG", "ZGJTZCS", "YXZRQ", "XZCFSYTS", &extra->revision);
+
+    /* The projection fills EXACTLY the ten fields the reference lets it fill, and
+     * only where the primary is empty.  The list is short and fixed on purpose: a
+     * projection that could fill anything would silently override good data. */
+    if (projection.row >= 0) {
+        if (!out->risk_notice.present) {
+            out->risk_notice = row_text(&projection, "FXTS");
+            flags->projection_fields_used += out->risk_notice.present ? 1 : 0;
+        }
+        if (!out->has_face_value && row_number(&projection, "MZ", &out->face_value)) {
+            out->has_face_value = 1;
+            flags->projection_fields_used++;
+        }
+        if (!out->has_conversion_price &&
+            row_number(&projection, "ZGJ", &out->conversion_price)) {
+            out->has_conversion_price = 1;
+            flags->projection_fields_used++;
+        }
+        if (!out->conversion_start_date.present) {
+            out->conversion_start_date = row_text(&projection, "ZGQSR");
+            flags->projection_fields_used += out->conversion_start_date.present ? 1 : 0;
+        }
+        if (!out->conversion_end_date.present) {
+            out->conversion_end_date = row_text(&projection, "ZGJZR");
+            flags->projection_fields_used += out->conversion_end_date.present ? 1 : 0;
+        }
+        if (!out->maturity_date.present) {
+            out->maturity_date = row_text(&projection, "DQRQ");
+            flags->projection_fields_used += out->maturity_date.present ? 1 : 0;
+        }
+        if (!out->has_remaining_years &&
+            row_number(&projection, "SYNX", &out->remaining_years)) {
+            out->has_remaining_years = 1;
+            flags->projection_fields_used++;
+        }
+        if (!out->has_maturity_redemption_price &&
+            row_number(&projection, "DQSHJ", &out->maturity_redemption_price)) {
+            out->has_maturity_redemption_price = 1;
+            flags->projection_fields_used++;
+        }
+        if (!out->has_unpaid_coupon_sum &&
+            row_number(&projection, "LLZH", &out->unpaid_coupon_sum)) {
+            out->has_unpaid_coupon_sum = 1;
+            flags->projection_fields_used++;
+        }
+        if (!out->has_sellback_trigger_ratio_pct &&
+            row_number(&projection, "HSCFBL", &out->sellback_trigger_ratio_pct)) {
+            out->has_sellback_trigger_ratio_pct = 1;
+            flags->projection_fields_used++;
+        }
+        if (!out->has_redemption_trigger_ratio_pct &&
+            row_number(&projection, "QSCFBL", &out->redemption_trigger_ratio_pct)) {
+            out->has_redemption_trigger_ratio_pct = 1;
+            flags->projection_fields_used++;
+        }
+        /* The completeness test is re-evaluated because the projection may just have
+         * supplied the terms it needs. */
+        out->core_terms_complete = out->has_face_value && out->has_conversion_price &&
+                                   out->maturity_date.present;
+    }
     return TDX_OK;
 }
 
@@ -260,7 +342,7 @@ int tdx_convertible_keys(const tdx_convertible_documents *documents, tdx_code *o
     size_t unique = 0;
     size_t index;
     size_t room;
-    const tdx_jsn_document *all[6];
+    const tdx_jsn_document *all[8];
     size_t doc_index;
 
     if (out_count)
@@ -277,8 +359,10 @@ int tdx_convertible_keys(const tdx_convertible_documents *documents, tdx_code *o
     all[3] = documents->sellback;
     all[4] = documents->redemption;
     all[5] = documents->revision;
+    all[6] = documents->exchangeable;
+    all[7] = documents->projection;
     room = 0;
-    for (doc_index = 0; doc_index < 6; ++doc_index) {
+    for (doc_index = 0; doc_index < 8; ++doc_index) {
         if (!all[doc_index] || all[doc_index]->group_count == 0)
             continue;
         room += all[doc_index]->groups[0].row_count;
@@ -290,7 +374,7 @@ int tdx_convertible_keys(const tdx_convertible_documents *documents, tdx_code *o
         tdx_error_set(err, "out of memory for %zu bond keys", room);
         return TDX_ERR;
     }
-    for (doc_index = 0; doc_index < 6; ++doc_index) {
+    for (doc_index = 0; doc_index < 8; ++doc_index) {
         if (add_keys(all[doc_index], entries, room, &count) != TDX_OK) {
             free(entries);
             tdx_error_set(err, "the bond keys do not fit in %zu entries", room);

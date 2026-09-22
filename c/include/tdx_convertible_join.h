@@ -21,9 +21,17 @@
  * transfers that produced the rows, and it keeps the join to the one rule the
  * reference states - same market, same code - with no hashing to get subtly wrong.
  *
- * The exchangeable-bond projections the reference adds on top are NOT part of this
- * join: they are two further documents with their own precedence rules, and they are
- * not ported. */
+ * Two further documents have their own precedence rules, and both are ported:
+ *
+ *   exchangeable  list/kjhz_kjhzsy201_1.jsn  REPLACES the overview row for the bond
+ *                 it names, rather than filling gaps in it
+ *   projection    list/func_kzz103_1.jsn     fills only the ten fields the reference
+ *                 allows it to fill, and only where the primary is empty
+ *
+ * The distinction matters because the two behave differently: the exchangeable
+ * document is a substitute overview, while the projection is a fallback that must not
+ * overwrite anything already present.  Applying either one the other's way would give
+ * plausible values that disagree with the reference. */
 #ifndef TDX_CONVERTIBLE_JOIN_H
 #define TDX_CONVERTIBLE_JOIN_H
 
@@ -44,6 +52,8 @@ extern "C" {
  * rather than truncated. */
 #define TDX_CONVERTIBLE_KEYS_MAX 8192
 
+#define TDX_CONVERTIBLE_EXCHANGEABLE_RESOURCE "list/kjhz_kjhzsy201_1.jsn"
+#define TDX_CONVERTIBLE_EXCHANGEABLE_PROJECTION_RESOURCE "list/func_kzz103_1.jsn"
 #define TDX_CONVERTIBLE_PROGRESS_RESOURCE "list/func_kzz_tkjd201.jsn"
 #define TDX_CONVERTIBLE_COUPONS_RESOURCE "list/func_kzz_lltk201.jsn"
 #define TDX_CONVERTIBLE_SELLBACK_RESOURCE "list/func_kzz_hstk201.jsn"
@@ -59,6 +69,10 @@ typedef struct tdx_convertible_documents {
     const tdx_jsn_document *sellback;
     const tdx_jsn_document *redemption;
     const tdx_jsn_document *revision;
+    /* Replaces the overview row for the bonds it names. */
+    const tdx_jsn_document *exchangeable;
+    /* Fills only the ten fields the reference allows, and only where empty. */
+    const tdx_jsn_document *projection;
 } tdx_convertible_documents;
 
 /* Which of the six carried the bond.  A joined row that came only from a non-overview
@@ -70,6 +84,15 @@ typedef struct tdx_convertible_join_flags {
     int from_sellback;
     int from_redemption;
     int from_revision;
+    /* The bond appeared in the exchangeable document, which REPLACED its overview
+     * row.  This is not the same as the reference's `exchangeable` flag, which is
+     * decided by the code prefix alone. */
+    int exchangeable_supplemented;
+    /* The projection document carried the bond, so its fallback was available. */
+    int exchangeable_projection_verified;
+    /* How many fields the projection actually supplied, since it was allowed to
+     * supply at most ten and only where the primary was empty. */
+    size_t projection_fields_used;
 } tdx_convertible_join_flags;
 
 /* The trigger document the reference attaches three times: for sellback, redemption
