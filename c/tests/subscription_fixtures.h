@@ -1,6 +1,6 @@
 /* subscription_fixtures.h - a captured subscription list, GENERATED. Do not edit.
  *
- * Produced by output/make_subscription_fixtures.py from output/subscription.gbk,
+ * Produced by c/tools/generators/make_subscription_fixtures.py from output/subscription.gbk,
  * which output/dbg_jsn_probe.c wrote from the bytes a public node returned for
  * bi/list/func_kkzss101_1.jsn (md5 2990f03628291e2135eb9b9c7bca1842, 319 rows).
  *

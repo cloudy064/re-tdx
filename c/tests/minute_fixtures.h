@@ -1,6 +1,6 @@
 /* minute_fixtures.h - windows of real .lc1 files, GENERATED. Do not hand edit.
  *
- * Produced by output/make_minute_fixtures.py from the terminal's own minline tree.
+ * Produced by c/tools/generators/make_minute_fixtures.py from the terminal's own minline tree.
  *
  * Two windows, chosen for the decision they test rather than for being tidy:
  *

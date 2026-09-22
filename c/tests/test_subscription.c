@@ -17,6 +17,7 @@
  * document's zgj and the overview's ZGJ are the same bond's conversion price in two
  * independent resources, and all 314 bonds present in both agreed exactly. */
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 #include "tdx_subscription.h"
@@ -90,9 +91,9 @@ static void test_derived_guards(void) {
     CHECK(tdx_subscription_premium(106.368, 0.0, &premium) == 0,
           "a zero conversion value leaves the premium undefined");
     /* A non-finite input must not produce a finite-looking result. */
-    CHECK(tdx_subscription_conversion_value(4.950, 1.0 / 0.0, &value) == 0,
+    CHECK(tdx_subscription_conversion_value(4.950, INFINITY, &value) == 0,
           "an infinite conversion price is refused");
-    CHECK(tdx_subscription_premium(1.0 / 0.0, 80.0, &premium) == 0,
+    CHECK(tdx_subscription_premium(INFINITY, 80.0, &premium) == 0,
           "an infinite bond close is refused");
     /* A null output is refused rather than dereferenced. */
     CHECK(tdx_subscription_conversion_value(4.95, 6.17, NULL) == 0,
@@ -101,7 +102,7 @@ static void test_derived_guards(void) {
 }
 
 static void test_normalize_captured(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_subscription_row rows[SUBSCRIPTION_FIXTURE_ROWS + 2];
     size_t count = 0;
     size_t skipped = 0;
@@ -199,7 +200,7 @@ static void test_normalize_skips(void) {
         "[\"110075\",\"1\",\"600029\",\"sh\",\"bad stock market\"],"
         "[\"110075\",\"sz\",\"600029\",\"1\",\"bad bond market\"],"
         "[\"110076\",\"1\",\"600030\",\"1\",\"ok too\"]]}]";
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_subscription_row rows[8];
     size_t count = 0;
     size_t skipped = 0;
@@ -227,7 +228,7 @@ static void test_normalize_skips(void) {
         static const char *bare =
             "[{\"colheader\":[\"$ZQDM\",\"$SC\",\"$ZQDM1\",\"$SC1\"],"
             "\"data\":[[\"110075\",\"1\",\"600029\",\"1\"]]}]";
-        tdx_jsn_document other;
+        tdx_jsn_document other = {0};
         tdx_jsn_document_init(&other);
         if (tdx_jsn_parse((const uint8_t *)bare, strlen(bare), &other, &error) == TDX_OK) {
             CHECK(tdx_subscription_normalize(&other, &other.groups[0], rows, 8, &count, &skipped,
@@ -250,11 +251,11 @@ static void test_normalize_skips(void) {
 }
 
 static void test_rendering(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_subscription_row rows[SUBSCRIPTION_FIXTURE_ROWS + 2];
     size_t count = 0;
     size_t skipped = 0;
-    tdx_buf line;
+    tdx_buf line = {0};
     const char *text;
     int depth = 0;
     int in_string = 0;

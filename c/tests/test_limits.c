@@ -37,7 +37,7 @@ static int failures = 0;
     } while (0)
 
 static void test_request(void) {
-    tdx_buf request;
+    tdx_buf request = {0};
     tdx_error error;
     error.message[0] = '\0';
     tdx_buf_init(&request);

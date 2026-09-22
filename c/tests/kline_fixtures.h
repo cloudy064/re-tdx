@@ -1,6 +1,6 @@
 /* kline_fixtures.h - live 0x052D replies, GENERATED. Do not hand edit.
  *
- * Produced by output/make_kline_fixtures.py from output/kline_probe_evidence.txt,
+ * Produced by c/tools/generators/make_kline_fixtures.py from output/kline_probe_evidence.txt,
  * which output/dbg_kline_probe.c wrote from the bytes a public node returned.
  * Regenerate both together; editing these bytes by hand would turn a captured
  * fixture into an invented one. */

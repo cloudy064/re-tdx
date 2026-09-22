@@ -112,8 +112,8 @@ int tdx_limits_parse(const uint8_t *payload, size_t size, unsigned index_of_firs
 
 int tdx_limits_fetch(tdx_connection *connection, unsigned start_index, tdx_limit_record *out,
                      size_t capacity, size_t *out_count, unsigned *indices, tdx_error *err) {
-    tdx_buf request;
-    tdx_buf response;
+    tdx_buf request = {0};
+    tdx_buf response = {0};
     int result = TDX_ERR;
 
     if (!connection || !out) {

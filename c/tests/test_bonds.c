@@ -144,8 +144,8 @@ static void test_market_naming(void) {
 }
 
 static void test_normalize_captured(void) {
-    tdx_buf utf8;
-    tdx_jsn_document document;
+    tdx_buf utf8 = {0};
+    tdx_jsn_document document = {0};
     tdx_bond_row row;
 
     error.message[0] = '\0';
@@ -205,7 +205,7 @@ static void test_normalize_master(void) {
         "[{\"colheader\":[\"$ZQDM1\",\"$SC1\",\"$ZQDM\",\"$SC\",\"ZQJC\",\"GM\",\"ZQLX\"],"
         "\"data\":[[\"010107\",\"1\",\"600000\",\"1\",\"20国债07\",\"56000000000\","
         "\"国债\"]]}]";
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_bond_row row;
 
     tdx_jsn_document_init(&document);
@@ -236,7 +236,7 @@ static void test_normalize_projection(void) {
     static const char *json =
         "[{\"colheader\":[\"$ZQDM\",\"$SC\",\"ZQJC\",\"GM\",\"$ZQDM1\",\"$SC1\"],"
         "\"data\":[[\"019427\",\"1\",\"25国债15\",\"260\",\"600519\",\"1\"]]}]";
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_bond_row row;
 
     tdx_jsn_document_init(&document);
@@ -266,7 +266,7 @@ static void test_normalize_policy_financial(void) {
     static const char *json =
         "[{\"colheader\":[\"$ZQDM\",\"$SC\",\"ZQJC\",\"GM\"],"
         "\"data\":[[\"018014\",\"1\",\"25国开14\",\"100\"]]}]";
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_bond_row row;
 
     tdx_jsn_document_init(&document);
@@ -288,7 +288,7 @@ static void test_coupon_schedule(void) {
         "[{\"colheader\":[\"$ZQDM\",\"$SC\",\"FXRQXL\",\"FXLLXL\",\"SYFXRQXL\",\"SYFXLLXL\"],"
         "\"data\":[[\"010107\",\"1\",\"20250101,20260101,20270101\",\"0.035,0.04,3.5\","
         "\"20260101,20270101\",\"0.04,3.5\"]]}]";
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_bond_coupon entries[8];
     size_t count = 0;
     size_t list_length = 0;
@@ -316,7 +316,7 @@ static void test_coupon_schedule(void) {
         static const char *shorter =
             "[{\"colheader\":[\"FXRQXL\",\"FXLLXL\"],\"data\":[[\"20250101,20260101\","
             "\"0.035\"]]}]";
-        tdx_jsn_document other;
+        tdx_jsn_document other = {0};
         tdx_jsn_document_init(&other);
         if (open_document(shorter, &other) != TDX_OK) {
             CHECK(0, "the shorter list parses: %s", error.message);
@@ -339,7 +339,7 @@ after_short:
     {
         static const char *empty =
             "[{\"colheader\":[\"$ZQDM\"],\"data\":[[\"010107\"]]}]";
-        tdx_jsn_document other;
+        tdx_jsn_document other = {0};
         tdx_jsn_document_init(&other);
         if (open_document(empty, &other) != TDX_OK) {
             CHECK(0, "the empty case parses: %s", error.message);
@@ -364,7 +364,7 @@ after_empty:
 }
 
 static void test_identity_rejects(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_bond_row row;
 
     /* A row with no code column value cannot be attributed to a security. */
@@ -405,9 +405,9 @@ static void test_identity_rejects(void) {
 }
 
 static void test_rendering(void) {
-    tdx_buf utf8;
-    tdx_buf line;
-    tdx_jsn_document document;
+    tdx_buf utf8 = {0};
+    tdx_buf line = {0};
+    tdx_jsn_document document = {0};
     tdx_bond_row row;
 
     error.message[0] = '\0';

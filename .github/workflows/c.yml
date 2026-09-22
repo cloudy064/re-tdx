@@ -1,0 +1,105 @@
+name: C implementation
+
+on:
+  push:
+    paths: ['c/**', '.github/workflows/c.yml']
+  pull_request:
+    paths: ['c/**', '.github/workflows/c.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [linux-gcc, linux-clang-sanitize]
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build zlib1g-dev clang
+      - name: Check generated tables and fixtures
+        run: python3 c/tools/generate.py --check
+      - name: Configure
+        working-directory: c
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        working-directory: c
+        run: cmake --build --preset ${{ matrix.preset }} --parallel 2
+      - name: Run all C tests
+        working-directory: c
+        run: ctest --preset ${{ matrix.preset }} --timeout 120
+      - name: Configure bounded fuzzing
+        if: matrix.preset == 'linux-clang-sanitize'
+        working-directory: c
+        run: cmake --preset linux-fuzz && cmake --build --preset linux-fuzz --parallel 2
+      - name: Fuzz codec boundaries
+        if: matrix.preset == 'linux-clang-sanitize'
+        shell: bash
+        run: |
+          mkdir -p build/c-linux-fuzz/corpus
+          cp c/tests/fixtures/inputs/valuation_master.json build/c-linux-fuzz/corpus/jsn.json
+          build/c-linux-fuzz/tdx-fuzz-codecs build/c-linux-fuzz/corpus -runs=10000 -max_total_time=30 -max_len=8192 -timeout=5 -rss_limit_mb=1024
+
+  windows-mingw:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-python
+      - name: Check generated tables and fixtures
+        run: python c/tools/generate.py --check
+      - name: Configure and build
+        working-directory: c
+        run: cmake --preset windows-mingw && cmake --build --preset windows-mingw --parallel 2
+      - name: Run all C tests
+        working-directory: c
+        run: ctest --preset windows-mingw --timeout 120
+
+  windows-msvc:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Install native zlib
+        shell: pwsh
+        run: '& "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install zlib:x64-windows'
+      - name: Check generated tables and fixtures
+        run: python c/tools/generate.py --check
+      - name: Configure
+        working-directory: c
+        shell: pwsh
+        run: cmake --preset windows-msvc "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
+      - name: Build
+        working-directory: c
+        run: cmake --build --preset windows-msvc --parallel 2
+      - name: Run all C tests
+        working-directory: c
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/debug/bin;$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin;" + $env:PATH
+          ctest --preset windows-msvc --timeout 120

@@ -2,10 +2,12 @@
 #include "tdx_bonds_json.h"
 
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "tdx_format.h"
+#include "tdx_date.h"
 
 #define APPEND_LITERAL(buf, err, text) tdx_buf_append((buf), (text), sizeof(text) - 1, (err))
 /* The argument must be a string literal.  This macro sizes it with sizeof, and a
@@ -29,29 +31,18 @@ const char *tdx_bonds_scale_name(tdx_bond_scale scale) {
 
 /* A text field: the document's own bytes, escaped, or null when absent. */
 static int append_text(tdx_buf *out, const tdx_bond_text *text, tdx_error *err) {
-    char scratch[1024];
-
     if (!text->present || !text->data)
         return APPEND_LITERAL(out, err, "null");
-    if (text->length >= sizeof(scratch)) {
-        /* Escaping is the only reason to copy at all, and a field this long is not
-         * one of the resource's scalars. */
-        tdx_error_set(err, "a bond text field is %zu bytes, longer than this renderer holds",
-                      text->length);
-        return TDX_ERR;
-    }
-    memcpy(scratch, text->data, text->length);
-    scratch[text->length] = '\0';
-    return tdx_format_json_string(out, scratch, err);
+    return tdx_format_json_string_n(out, text->data, text->length, err);
 }
 
 static int append_number(tdx_buf *out, int has, double value, tdx_error *err) {
-    if (!has)
+    if (!has || !isfinite(value))
         return APPEND_LITERAL(out, err, "null");
     return tdx_buf_append_printf(out, err, "%.6f", value);
 }
 
-int tdx_bonds_format(tdx_buf *out, const tdx_bond_row *row, const char *resource, size_t group,
+static int format_fields(tdx_buf *out, const tdx_bond_row *row, const char *resource, size_t group,
                      size_t row_index, tdx_error *err) {
     if (!out || !row) {
         tdx_error_set(err, "bond rendering needs a buffer and a row");
@@ -220,6 +211,31 @@ int tdx_bonds_format(tdx_buf *out, const tdx_bond_row *row, const char *resource
         if (APPEND_LITERAL(out, err, "}") != TDX_OK)
             return TDX_ERR;
     }
+    return TDX_OK;
+}
+
+int tdx_bonds_format(tdx_buf *out, const tdx_bond_row *row, const char *resource,
+                     size_t group, size_t row_index, tdx_error *err) {
+    if (format_fields(out, row, resource, group, row_index, err) != TDX_OK)
+        return TDX_ERR;
+    return tdx_buf_push(out, '}', err);
+}
+
+int tdx_bonds_format_with_schedule(tdx_buf *out, const tdx_bond_row *row,
+    const char *resource, const tdx_jsn_document *document, const tdx_jsn_group *group,
+    size_t group_index, size_t row_index, size_t schedule_capacity, tdx_error *err) {
+    if (!document || !group) {
+        tdx_error_set(err, "rendering schedules needs a source document and group");
+        return TDX_ERR;
+    }
+    if (format_fields(out, row, resource, group_index, row_index, err) != TDX_OK ||
+        APPEND_LITERAL(out, err, ",\"coupon_schedule\":") != TDX_OK ||
+        tdx_bonds_format_schedule(out, document, group, row_index, "FXRQXL", "FXLLXL",
+                                   schedule_capacity, err) != TDX_OK ||
+        APPEND_LITERAL(out, err, ",\"remaining_coupon_schedule\":") != TDX_OK ||
+        tdx_bonds_format_schedule(out, document, group, row_index, "SYFXRQXL", "SYFXLLXL",
+                                   schedule_capacity, err) != TDX_OK)
+        return TDX_ERR;
     return tdx_buf_push(out, '}', err);
 }
 
@@ -239,6 +255,10 @@ int tdx_bonds_format_schedule(tdx_buf *out, const tdx_jsn_document *doc,
     }
     if (capacity == 0)
         return tdx_buf_append(out, "[]", 2, err);
+    if (capacity > SIZE_MAX / sizeof(*entries)) {
+        tdx_error_set(err, "coupon schedule capacity overflow");
+        return TDX_ERR;
+    }
     entries = (tdx_bond_coupon *)malloc(capacity * sizeof(*entries));
     if (!entries) {
         tdx_error_set(err, "out of memory for %zu coupon entries", capacity);
@@ -252,12 +272,20 @@ int tdx_bonds_format_schedule(tdx_buf *out, const tdx_jsn_document *doc,
     for (index = 0; index < count; ++index) {
         if (index > 0 && tdx_buf_push(out, ',', err) != TDX_OK)
             goto done;
-        if (tdx_buf_append_printf(out, err, "{\"date\":%.*s,\"rate_pct\":",
-                                  (int)entries[index].date.length,
-                                  entries[index].date.data ? entries[index].date.data : "")
-            != TDX_OK)
+        if (APPEND_LITERAL(out, err, "{\"date\":") != TDX_OK)
             goto done;
-        if (!entries[index].has_rate) {
+        {
+            uint32_t date;
+            if (tdx_date_parse(entries[index].date.data, entries[index].date.length, 0, &date)) {
+                if (tdx_buf_append_printf(out, err, "%u", (unsigned)date) != TDX_OK)
+                    goto done;
+            } else if (append_text(out, &entries[index].date, err) != TDX_OK) {
+                goto done;
+            }
+        }
+        if (APPEND_LITERAL(out, err, ",\"rate_pct\":") != TDX_OK)
+            goto done;
+        if (!entries[index].has_rate || !isfinite(entries[index].rate_pct)) {
             if (tdx_buf_append(out, "null", 4, err) != TDX_OK)
                 goto done;
         } else if (tdx_buf_append_printf(out, err, "%.6f", entries[index].rate_pct) != TDX_OK) {
@@ -285,12 +313,11 @@ int tdx_bonds_format_summary(tdx_buf *out, size_t rows, size_t rows_with_name,
         return TDX_ERR;
     if (tdx_format_json_string(out, resource ? resource : "", err) != TDX_OK)
         return TDX_ERR;
-    if (APPEND_LITERAL(out, err, ",\"scale\":\"") != TDX_OK)
+    if (APPEND_LITERAL(out, err, ",\"scale\":") != TDX_OK)
         return TDX_ERR;
-    if (tdx_buf_append(out, scale_name ? scale_name : "", strlen(scale_name ? scale_name : ""),
-                       err) != TDX_OK)
+    if (tdx_format_json_string(out, scale_name ? scale_name : "", err) != TDX_OK)
         return TDX_ERR;
-    if (APPEND_LITERAL(out, err, "\",\"endpoint\":") != TDX_OK)
+    if (APPEND_LITERAL(out, err, ",\"endpoint\":") != TDX_OK)
         return TDX_ERR;
     if (endpoint && *endpoint) {
         if (tdx_format_json_string(out, endpoint, err) != TDX_OK)
@@ -312,7 +339,7 @@ int tdx_bonds_format_comma_array(tdx_buf *out, const tdx_bond_text *text, int nu
     size_t index = 0;
     size_t emitted = 0;
 
-    if (!out || !text) {
+    if (!out || !text || (text->present && text->length && !text->data)) {
         tdx_error_set(err, "a comma list needs a buffer and a value");
         return TDX_ERR;
     }
@@ -346,7 +373,7 @@ int tdx_bonds_format_comma_array(tdx_buf *out, const tdx_bond_text *text, int nu
                 memcpy(scratch, text->data + start, length);
                 scratch[length] = '\0';
                 value = strtod(scratch, &end);
-                if (end && end != scratch && *end == '\0') {
+                if (end == scratch + length && end != scratch && isfinite(value)) {
                     if (tdx_buf_append_printf(out, err, "%.10g", value) != TDX_OK)
                         return TDX_ERR;
                     continue;
@@ -356,24 +383,7 @@ int tdx_bonds_format_comma_array(tdx_buf *out, const tdx_bond_text *text, int nu
              * numeric_array does the same, and dropping it would shorten the list
              * without saying so. */
         }
-        if (tdx_buf_push(out, '"', err) != TDX_OK)
-            return TDX_ERR;
-        {
-            size_t position;
-            for (position = start; position < stop; ++position) {
-                char ch = text->data[position];
-                if (ch == '"' || ch == '\\') {
-                    char pair[2];
-                    pair[0] = '\\';
-                    pair[1] = ch;
-                    if (tdx_buf_append(out, pair, 2, err) != TDX_OK)
-                        return TDX_ERR;
-                } else if (tdx_buf_push(out, (uint8_t)ch, err) != TDX_OK) {
-                    return TDX_ERR;
-                }
-            }
-        }
-        if (tdx_buf_push(out, '"', err) != TDX_OK)
+        if (tdx_format_json_string_n(out, text->data + start, stop - start, err) != TDX_OK)
             return TDX_ERR;
     }
     return tdx_buf_push(out, ']', err);

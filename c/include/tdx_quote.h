@@ -96,13 +96,16 @@ int tdx_connection_open(tdx_connection *connection, const tdx_endpoint *endpoint
                         int timeout_ms, tdx_error *err);
 void tdx_connection_close(tdx_connection *connection);
 
-/* Sends one command and returns the decoded body.  out is reset first. */
+/* Sends one command and returns the decoded body. out must be initialized;
+ * its allocation is reused, and its length is zero on failure. */
 int tdx_connection_call(tdx_connection *connection, uint16_t message_type,
                         const void *body, size_t body_size, tdx_buf *out,
                         tdx_error *err);
 
 /* --- 0x0547 ------------------------------------------------------- */
 
+/* out must be initialized; rebuilds reuse its allocation. Failure leaves an
+ * empty buffer that remains owned by the caller. codes must not alias out. */
 int tdx_quote_build_depth_request(const tdx_code *codes, size_t count,
                                   tdx_buf *out, tdx_error *err);
 

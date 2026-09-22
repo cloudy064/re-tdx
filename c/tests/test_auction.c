@@ -29,8 +29,6 @@ static int failures = 0;
 
 static void test_helpers(void) {
     char label[12];
-    tdx_error error;
-    error.message[0] = '\0';
 
     CHECK(strcmp(tdx_auction_direction_text(1), "buy") == 0, "positive is buy");
     CHECK(strcmp(tdx_auction_direction_text(-1), "sell") == 0, "negative is sell");
@@ -56,7 +54,7 @@ static void test_helpers(void) {
 /* --- request ---------------------------------------------------------- */
 
 static void test_request(void) {
-    tdx_buf request;
+    tdx_buf request = {0};
     tdx_error error;
     error.message[0] = '\0';
     tdx_buf_init(&request);
@@ -326,7 +324,7 @@ static int braces_balanced(const char *text) {
 static void test_json_rendering(void) {
     tdx_auction_series series;
     tdx_auction_summary summary;
-    tdx_buf line;
+    tdx_buf line = {0};
     tdx_error error;
     char text[4096];
     size_t copy;
@@ -381,7 +379,7 @@ static void test_json_rendering(void) {
     CHECK(strstr(text, "\"largest_gap_seconds\":19932") != NULL, "the segment gap");
 
     /* An empty series renders nulls rather than invented values. */
-    tdx_auction_series_init(&series);
+    tdx_auction_series_free(&series);
     tdx_auction_summarize(&series, &summary);
     tdx_buf_clear(&line);
     CHECK(tdx_auction_format_summary(&line, &series, &summary, 0, "000623", NULL, NULL, &error) ==
@@ -404,6 +402,32 @@ static void test_json_rendering(void) {
     tdx_auction_series_free(&series);
 }
 
+static void test_parse_lifetime(void) {
+    tdx_auction_series series = {0};
+    tdx_error error = {0};
+    uint8_t invalid[sizeof(combined_reply)];
+    size_t iteration;
+    /* Fail after earlier records have allocated storage, then release the
+     * partial result through the same public lifecycle as a successful parse. */
+    memcpy(invalid, combined_reply, sizeof(invalid));
+    invalid[2 + TDX_AUCTION_RECORD_SIZE + 15] = 60;
+    for (iteration = 0; iteration < 20; ++iteration) {
+        CHECK(tdx_auction_parse(combined_reply, sizeof(combined_reply), 1, 0, 200,
+                                &series, &error) == TDX_OK, "repeat parse: %s", error.message);
+        CHECK(series.count == tdx_u16le(combined_reply), "a fresh parse has exactly one reply");
+        tdx_auction_series_free(&series);
+        CHECK(!series.points && series.count == 0 && series.capacity == 0,
+              "free releases and resets the successful result");
+        CHECK(tdx_auction_parse(invalid, sizeof(invalid), 1, 0, 200,
+                                &series, &error) == TDX_ERR, "partial parse fails");
+        CHECK(series.count == 1, "failure occurs after allocation of the first point");
+        tdx_auction_series_free(&series);
+        CHECK(!series.points && series.count == 0 && series.capacity == 0,
+              "free releases and resets the partial result");
+    }
+    tdx_auction_series_free(&series);
+}
+
 int main(void) {
     test_helpers();
     test_request();
@@ -411,6 +435,7 @@ int main(void) {
     test_parse_combined();
     test_parse_rejects();
     test_json_rendering();
+    test_parse_lifetime();
 
     if (failures) {
         printf("%d auction check(s) failed\n", failures);

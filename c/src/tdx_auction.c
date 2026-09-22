@@ -248,8 +248,8 @@ void tdx_auction_summarize(const tdx_auction_series *series, tdx_auction_summary
 int tdx_auction_fetch(tdx_connection *connection, int market_id, const char *code,
                       uint32_t selector, uint32_t start_raw, uint32_t limit,
                       tdx_auction_series *out, tdx_error *err) {
-    tdx_buf request;
-    tdx_buf response;
+    tdx_buf request = {0};
+    tdx_buf response = {0};
     int result = TDX_ERR;
 
     if (!connection || !out) {

@@ -56,7 +56,7 @@ static void test_stored_and_deflate(void) {
     for (which = 0; which < 2; ++which) {
         tdx_zip_entry entries[TDX_ZIP_ENTRIES_MAX];
         tdx_zip_entry entry;
-        tdx_buf member;
+        tdx_buf member = {0};
         size_t count = 0;
         tdx_profinance_document document;
         tdx_profinance_record_view view;
@@ -145,7 +145,7 @@ static void test_stored_and_deflate(void) {
 static void test_refusals(void) {
     tdx_zip_entry entries[TDX_ZIP_ENTRIES_MAX];
     tdx_zip_entry entry;
-    tdx_buf member;
+    tdx_buf member = {0};
     size_t count = 0;
 
     error.message[0] = '\0';
@@ -286,7 +286,7 @@ static void test_rendered_lines_parse(void) {
     size_t index;
 
     for (index = 0; index < sizeof(lines) / sizeof(lines[0]); ++index) {
-        tdx_json_doc doc;
+        tdx_json_doc doc = {0};
         error.message[0] = '\0';
         tdx_json_doc_init(&doc);
         CHECK(tdx_json_parse((const uint8_t *)lines[index], strlen(lines[index]), &doc,
@@ -301,7 +301,7 @@ static void test_rendered_lines_parse(void) {
          * have been legal, which is why the first version of this check was wrong.) */
         static const char *broken =
             "{\"type\":\"finance_document\",\"source\":\"C:\\Users\\x.zip\"}";
-        tdx_json_doc doc;
+        tdx_json_doc doc = {0};
         error.message[0] = '\0';
         tdx_json_doc_init(&doc);
         CHECK(tdx_json_parse((const uint8_t *)broken, strlen(broken), &doc, &error) == TDX_ERR,

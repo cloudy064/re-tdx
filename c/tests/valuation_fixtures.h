@@ -1,7 +1,7 @@
 /* valuation_fixtures.h - the index valuation family, captured. GENERATED.
  * Do not hand edit.
  *
- * Produced by output/make_valuation_fixtures.py from the bytes a public node returned
+ * Produced by c/tools/generators/make_valuation_fixtures.py from the bytes a public node returned
  * for four resources:
  *
  *   list/func_zsgz101_1.jsn  4621 bytes, 11 rows  ALL of them - it is small

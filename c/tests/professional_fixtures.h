@@ -1,7 +1,7 @@
 /* professional_fixtures.h - prefixes of real professional-data files, GENERATED.
  * Do not hand edit.
  *
- * Produced by output/make_professional_fixtures.py from the .dat files the
+ * Produced by c/tools/generators/make_professional_fixtures.py from the .dat files the
  * reference implementation left in its own cache; each entry records the source
  * md5 and size so the prefix is traceable to the whole file.  The full file cannot
  * be embedded - 380 KB to 1.1 MB - and the full-file facts (record counts, id sets,

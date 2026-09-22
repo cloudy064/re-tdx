@@ -1,7 +1,7 @@
 /* convertible_fixtures.h - six captured convertible-bond documents, GENERATED.
  * Do not hand edit.
  *
- * Produced by output/make_convertible_fixtures.py from the .gbk files that
+ * Produced by c/tools/generators/make_convertible_fixtures.py from the .gbk files that
  * output/dbg_jsn_probe.c wrote from the bytes a public node returned.  Each
  * capture is tens to hundreds of kilobytes, so each is reduced to its VERBATIM
  * colheader plus the rows for the FIRST 3 BONDS OF THE OVERVIEW - chosen by

@@ -1,6 +1,6 @@
 /* auction_fixtures.h - live 0x056A replies, GENERATED. Do not hand edit.
  *
- * Produced by output/make_auction_fixtures.py from
+ * Produced by c/tools/generators/make_auction_fixtures.py from
  * output/auction_probe_evidence.txt, which output/dbg_auction_probe.c wrote
  * from the bytes a public node returned for sz000623.  Regenerate the pair
  * together; editing these bytes by hand would turn a captured fixture into

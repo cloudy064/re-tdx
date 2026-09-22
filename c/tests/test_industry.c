@@ -44,16 +44,6 @@ static const char *text_of(const tdx_buf *buffer) {
     return scratch;
 }
 
-static const char *bond_text(const tdx_bond_text *text) {
-    static char scratch[512];
-    if (!text->present || !text->data)
-        return "(absent)";
-    if (text->length >= sizeof(scratch))
-        return "(too long)";
-    memcpy(scratch, text->data, text->length);
-    scratch[text->length] = '\0';
-    return scratch;
-}
 
 static tdx_jsn_document document;
 static tdx_industry_row rows[INDUSTRY_FIXTURE_ROWS + 4];
@@ -233,13 +223,12 @@ static void test_skips_and_inconsistency(void) {
         "[\"00000\",\"0\",\"B\",\"880472\",\"1\",\"6.0\",\"0.6\",\"\",\"\"],"
         "[\"000003\",\"0\",\"A\",\"880471\",\"1\",\"9.9\",\"0.5\",\"0|000001,0|000002\",\"\"],"
         "[\"000004\",\"sh\",\"C\",\"880473\",\"1\",\"7.0\",\"0.7\",\"\",\"\"]]}]";
-    tdx_jsn_document other;
+    tdx_jsn_document other = {0};
     tdx_industry_row local_rows[8];
     tdx_industry local[8];
     size_t count = 0;
     size_t local_skipped = 0;
     size_t industries_found = 0;
-    size_t index;
 
     error.message[0] = '\0';
     tdx_jsn_document_init(&other);
@@ -273,7 +262,7 @@ static void test_skips_and_inconsistency(void) {
 }
 
 static void test_rendering(void) {
-    tdx_buf line;
+    tdx_buf line = {0};
     char reason[192];
 
     if (load() != TDX_OK)

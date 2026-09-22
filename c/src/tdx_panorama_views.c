@@ -1,6 +1,6 @@
 /* tdx_panorama_views.c - the panorama view registry. GENERATED.
  *
- * Do not hand edit: produced by output/make_panorama_views.py from the reference's own
+ * Do not hand edit: produced by c/tools/generators/make_panorama_views.py from the reference's own
  * view table in native/src/market/panorama.cpp.  Ten views and 112 field mappings - a
  * transcription job whose mistakes would look like plausible column names.
  *

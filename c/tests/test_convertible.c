@@ -70,7 +70,7 @@ static void test_kind(void) {
 }
 
 static void test_captured(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_convertible_row rows[CONVERTIBLE_FIXTURE_ROWS];
 
     error.message[0] = '\0';
@@ -173,7 +173,7 @@ done:
 }
 
 static void test_identity_rejects(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_convertible_row row;
 
     /* No bond code: the row cannot be attributed to a security. */
@@ -232,9 +232,9 @@ static void test_identity_rejects(void) {
 }
 
 static void test_rendering(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_convertible_row row;
-    tdx_buf line;
+    tdx_buf line = {0};
 
     error.message[0] = '\0';
     tdx_jsn_document_init(&document);

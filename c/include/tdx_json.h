@@ -29,6 +29,9 @@ extern "C" {
 #endif
 
 #define TDX_JSON_DEPTH_MAX 64
+#define TDX_JSON_INPUT_MAX (64u * 1024u * 1024u)
+#define TDX_JSON_NODES_MAX (1024u * 1024u)
+#define TDX_JSON_TEXT_MAX (64u * 1024u * 1024u)
 #define TDX_JSON_NODE_NONE ((size_t)-1)
 #define TDX_JSON_TEXT_NONE ((size_t)-1)
 
@@ -72,9 +75,14 @@ typedef struct tdx_json_doc {
 } tdx_json_doc;
 
 void tdx_json_doc_init(tdx_json_doc *doc);
+/* Documents must be initialized (or {0}) before use. clear preserves allocations;
+ * free releases them. Both invalidate all borrowed nodes and text views. */
+void tdx_json_doc_clear(tdx_json_doc *doc);
 void tdx_json_doc_free(tdx_json_doc *doc);
 
-/* Parses one complete value; trailing non-whitespace is an error. */
+/* Parses one complete value within size, without requiring a terminator.
+ * Reuses an initialized document; failure leaves it empty. Input must not
+ * alias document storage. Explicit limits bound input, node and text storage. */
 int tdx_json_parse(const uint8_t *data, size_t size, tdx_json_doc *doc, tdx_error *err);
 
 const tdx_json_node *tdx_json_root(const tdx_json_doc *doc);
@@ -82,6 +90,9 @@ const tdx_json_node *tdx_json_root(const tdx_json_doc *doc);
  * caller can walk a document without checking every step. */
 const tdx_json_node *tdx_json_at(const tdx_json_doc *doc, const tdx_json_node *node,
                                  size_t index);
+/* Linear traversal of siblings without repeatedly scanning from child zero. */
+const tdx_json_node *tdx_json_first(const tdx_json_doc *doc, const tdx_json_node *node);
+const tdx_json_node *tdx_json_next(const tdx_json_doc *doc, const tdx_json_node *node);
 const tdx_json_node *tdx_json_member(const tdx_json_doc *doc, const tdx_json_node *object,
                                      const char *key);
 /* The node's string value, or NULL.  The pointer is valid until the document is

@@ -1,6 +1,6 @@
 /* daily_fixtures.h - prefixes of real .day files, GENERATED. Do not hand edit.
  *
- * Produced by output/make_daily_fixtures.py from the .day files in the terminal's own
+ * Produced by c/tools/generators/make_daily_fixtures.py from the .day files in the terminal's own
  * vipdoc tree, each with its source md5 and size so the prefix is traceable.
  *
  * A stock and a convertible bond, because the two are stored at DIFFERENT scales -

@@ -1,6 +1,6 @@
 /* jsn_fixtures.h - a captured JSN resource, GENERATED. Do not hand edit.
  *
- * Produced by output/make_jsn_fixtures.py from output/jsn_probe_evidence.txt,
+ * Produced by c/tools/generators/make_jsn_fixtures.py from output/jsn_probe_evidence.txt,
  * which output/dbg_jsn_probe.c wrote from the bytes a public node returned for
  * bi/list/zq_tx201.jsn (the discount-bond list).  The payload is GBK and is kept
  * exactly as sent, md5 b5a03f5b0a848424085902a2557974cb,

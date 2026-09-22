@@ -27,7 +27,7 @@
 
 /* Returns 1 when the text is a JSON document this project can read, and 0 with a reason
  * written into message otherwise. */
-static int render_parses(const char *text, char *message, size_t capacity) {
+static inline int render_parses(const char *text, char *message, size_t capacity) {
     tdx_json_doc doc;
     tdx_error error;
     int result;

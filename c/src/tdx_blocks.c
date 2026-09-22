@@ -1,5 +1,6 @@
 /* tdx_blocks.c - the block families, their hierarchy and their members. */
 #include "tdx_blocks.h"
+#include "tdx_cache.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -526,28 +527,14 @@ int tdx_blocks_parse_infoharbor(const char *text, size_t length, tdx_block *bloc
 
 /* --- reading the files ------------------------------------------------ */
 
-static int read_file(const char *path, tdx_buf *out, tdx_error *err) {
-    FILE *stream = fopen(path, "rb");
-    unsigned char chunk[16384];
-    size_t got;
-    if (!stream)
-        return 0;
-    while ((got = fread(chunk, 1, sizeof(chunk), stream)) > 0)
-        if (tdx_buf_append(out, chunk, got, err) != TDX_OK) {
-            fclose(stream);
-            return -1;
-        }
-    fclose(stream);
-    return 1;
-}
 
 int tdx_blocks_load(const char *root, tdx_block *blocks, size_t block_capacity,
                     size_t *block_count, tdx_block_member *members, size_t member_capacity,
                     size_t *member_count, tdx_block_assignment *assignments,
                     size_t assignment_capacity, size_t *assignment_count,
                     tdx_blocks_load_report *report, tdx_error *err) {
-    static tdx_buf raw;
-    static tdx_buf utf8;
+    tdx_buf raw;
+    tdx_buf utf8;
     char path[TDX_BLOCKS_TEXT_MAX * 4];
     size_t catalog_blocks = 0;
     size_t harbor_blocks = 0;
@@ -572,8 +559,11 @@ int tdx_blocks_load(const char *root, tdx_block *blocks, size_t block_capacity,
     tdx_buf_init(&utf8);
 
     /* The industry catalog. */
-    snprintf(path, sizeof(path), "%s/T0002/hq_cache/tdxzs3.cfg", root);
-    read = read_file(path, &raw, err);
+    if (snprintf(path, sizeof(path), "%s/T0002/hq_cache/tdxzs3.cfg", root) >= (int)sizeof(path)) {
+        tdx_error_set(err, "block data path is too long");
+        goto done;
+    }
+    read = tdx_cache_read(path, &raw, err);
     if (read < 0)
         goto done;
     if (read > 0) {
@@ -592,8 +582,11 @@ int tdx_blocks_load(const char *root, tdx_block *blocks, size_t block_capacity,
     tdx_buf_clear(&utf8);
 
     /* The per-security assignments. */
-    snprintf(path, sizeof(path), "%s/T0002/hq_cache/tdxhy.cfg", root);
-    read = read_file(path, &raw, err);
+    if (snprintf(path, sizeof(path), "%s/T0002/hq_cache/tdxhy.cfg", root) >= (int)sizeof(path)) {
+        tdx_error_set(err, "block data path is too long");
+        goto done;
+    }
+    read = tdx_cache_read(path, &raw, err);
     if (read < 0)
         goto done;
     if (read > 0 && assignments) {
@@ -610,8 +603,11 @@ int tdx_blocks_load(const char *root, tdx_block *blocks, size_t block_capacity,
     tdx_buf_clear(&utf8);
 
     /* The concept, style and index blocks. */
-    snprintf(path, sizeof(path), "%s/T0002/hq_cache/infoharbor_block.dat", root);
-    read = read_file(path, &raw, err);
+    if (snprintf(path, sizeof(path), "%s/T0002/hq_cache/infoharbor_block.dat", root) >= (int)sizeof(path)) {
+        tdx_error_set(err, "block data path is too long");
+        goto done;
+    }
+    read = tdx_cache_read(path, &raw, err);
     if (read < 0)
         goto done;
     if (read > 0) {

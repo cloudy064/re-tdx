@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "tdx_directory.h"
+#include "tdx_directory_json.h"
 
 static int failures = 0;
 
@@ -192,12 +193,36 @@ static void test_parse_page_rejects(void) {
     tdx_security_list_free(&list);
 }
 
+static void test_security_json(void) {
+    tdx_security security = {0};
+    tdx_buf out = {0};
+    tdx_error error = {0};
+    const char expected[] =
+        "{\"security_id\":\"SH600000\",\"market\":\"sh\",\"code\":\"600000\","
+        "\"name\":\"a\\\"b\\\\c\\n\",\"category\":\"stock\",\"board\":\"main\","
+        "\"multiple\":100,\"decimal\":2,\"previous_close_price\":10.250000}";
+    security.market_id = 1;
+    memcpy(security.code, "600000", 7);
+    memcpy(security.name, "a\"b\\c\n", 7);
+    memcpy(security.category, "stock", 6);
+    memcpy(security.board, "main", 5);
+    security.multiple = 100;
+    security.decimal = 2;
+    security.previous_close_price = 10.25;
+    CHECK(tdx_directory_format_security(&out, &security, &error) == TDX_OK,
+          "security renderer: %s", error.message);
+    CHECK(out.len == sizeof(expected) - 1 && memcmp(out.data, expected, out.len) == 0,
+          "security JSON preserves schema, precision, order and escaping");
+    tdx_buf_free(&out);
+}
+
 int main(void) {
     test_categories();
     test_boards();
     test_category_filter();
     test_parse_page();
     test_parse_page_rejects();
+    test_security_json();
     if (failures) {
         printf("%d directory check(s) failed\n", failures);
         return 1;

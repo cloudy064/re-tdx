@@ -86,9 +86,10 @@ static void test_rule_file(void) {
      * "[RULE]" as one would have produced a key of "RULE" and no value. */
     {
         tdx_limit_rules none;
+        static const char unknown_rules[] = "[RULE]\n\nMainAG_Cage=1\n";
         tdx_limit_rules_default(&none);
         error.message[0] = '\0';
-        CHECK(tdx_limit_rules_parse("[RULE]\n\nMainAG_Cage=1\n", 24, &none, &error) == TDX_ERR,
+        CHECK(tdx_limit_rules_parse(unknown_rules, sizeof(unknown_rules) - 1, &none, &error) == TDX_ERR,
               "a file with none of the known keys is refused");
         CHECK(strstr(error.message, "none of the keys") != NULL, "and says so: %s",
               error.message);

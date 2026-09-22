@@ -87,7 +87,7 @@ static void test_compact_date(void) {
 }
 
 static void test_projection_mapping(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_newbond_row rows[NEWBOND_FIXTURE_ROWS + 2];
     size_t count = 0;
     size_t skipped = 0;
@@ -179,7 +179,7 @@ static void test_reconciliation_on_captures(void) {
      * assertion below would be about a vacuous match. */
     CHECK(subscription_count >= NEWBOND_FIXTURE_ROWS,
           "the fixture holds %zu subscriptions for %zu projection rows", subscription_count,
-          NEWBOND_FIXTURE_ROWS);
+          (size_t)NEWBOND_FIXTURE_ROWS);
     CHECK(tdx_newbond_reconcile(subscriptions, subscription_count, projections,
                                 projection_count, &report, &error) == TDX_OK,
           "reconcile: %s", error.message);
@@ -364,7 +364,7 @@ static void test_match_preference(void) {
 
 static void test_rendering(void) {
     tdx_newbond_reconciliation report;
-    tdx_buf line;
+    tdx_buf line = {0};
     const char *text;
     int depth = 0;
     int in_string = 0;

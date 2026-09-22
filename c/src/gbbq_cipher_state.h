@@ -1,7 +1,7 @@
 /* gbbq_cipher_state.h - the GBBQ cipher state, GENERATED. Do not hand edit.
  *
  * Extracted from native/src/corporate/corporate_gbbq.cpp by
- * output/make_gbbq_cipher_state.py, which pulls the base64 literal out of the
+ * c/tools/generators/make_gbbq_cipher_state.py, which pulls the base64 literal out of the
  * reference and decodes it here.  The blob is 4168 bytes and the decoding is
  * checked for length, because a mistyped character in a table like this would
  * corrupt every record with no other symptom.

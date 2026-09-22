@@ -64,7 +64,7 @@ static const char *bond_text(const tdx_bond_text *text) {
 #define BOARD_PLAN "\xe8\x91\xa3\xe4\xba\x8b\xe4\xbc\x9a\xe9\xa2\x84\xe6\xa1\x88"
 
 static void test_normalize_captured(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_pending_row rows[PENDING_FIXTURE_ROWS + 2];
     size_t count = 0;
     size_t skipped = 0;
@@ -146,7 +146,7 @@ static void test_normalize_skips(void) {
         "[{\"colheader\":[\"$ZQDM\",\"$SC\",\"zzlx\"],\"data\":["
         "[\"600300\",\"1\",\"ok\"],[\"60030\",\"1\",\"short\"],[\"600300\",\"sh\",\"bad market\"],"
         "[\"600301\",\"1\",\"ok too\"]]}]";
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_pending_row rows[8];
     size_t count = 0;
     size_t skipped = 0;
@@ -288,11 +288,11 @@ static void test_reconcile(void) {
 }
 
 static void test_rendering(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_pending_row rows[PENDING_FIXTURE_ROWS + 2];
     size_t count = 0;
     size_t skipped = 0;
-    tdx_buf line;
+    tdx_buf line = {0};
     const char *text;
     int depth = 0;
     int in_string = 0;

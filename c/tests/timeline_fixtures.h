@@ -1,6 +1,6 @@
 /* timeline_fixtures.h - a live 0x0537 reply, GENERATED. Do not hand edit.
  *
- * Produced by output/make_timeline_fixtures.py from
+ * Produced by c/tools/generators/make_timeline_fixtures.py from
  * output/timeline_0537_reply.bin, the reply a public node returned for
  * sz000623.  Regenerate the pair together; editing these bytes by hand
  * would turn a captured fixture into an invented one. */

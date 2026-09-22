@@ -1,12 +1,16 @@
 /* tdx_jsn.c - the JSN resource table format. */
 #include "tdx_jsn.h"
+#include "tdx_json_write.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <iconv.h>
 #endif
 
 void tdx_jsn_document_init(tdx_jsn_document *doc) {
@@ -21,18 +25,28 @@ void tdx_jsn_document_free(tdx_jsn_document *doc) {
         return;
     tdx_json_doc_free(&doc->json);
     free(doc->groups);
+    free(doc->row_nodes);
     tdx_jsn_document_init(doc);
+}
+
+void tdx_jsn_document_clear(tdx_jsn_document *doc) {
+    if (!doc)
+        return;
+    tdx_json_doc_clear(&doc->json);
+    doc->group_count = 0;
+    doc->row_count = 0;
 }
 
 int tdx_jsn_parse(const uint8_t *data, size_t size, tdx_jsn_document *doc, tdx_error *err) {
     const tdx_json_node *root;
+    const tdx_json_node *group;
     size_t index;
 
     if (!doc) {
         tdx_error_set(err, "JSN parsing needs a document");
         return TDX_ERR;
     }
-    tdx_jsn_document_init(doc);
+    tdx_jsn_document_clear(doc);
     if (tdx_json_parse(data, size, &doc->json, err) != TDX_OK)
         return TDX_ERR;
     root = tdx_json_root(&doc->json);
@@ -40,11 +54,13 @@ int tdx_jsn_parse(const uint8_t *data, size_t size, tdx_jsn_document *doc, tdx_e
         tdx_error_set(err, "a JSN root must be an array of groups");
         goto failed;
     }
-    for (index = 0; index < root->child_count; ++index) {
-        const tdx_json_node *group = tdx_json_at(&doc->json, root, index);
+    group = tdx_json_first(&doc->json, root);
+    for (index = 0; index < root->child_count; ++index,
+         group = tdx_json_next(&doc->json, group)) {
         const tdx_json_node *headers;
         const tdx_json_node *data_rows;
         size_t row;
+        const tdx_json_node *cells;
 
         if (!group || group->type != TDX_JSON_OBJECT) {
             tdx_error_set(err, "JSN group %zu is not an object", index);
@@ -58,12 +74,31 @@ int tdx_jsn_parse(const uint8_t *data, size_t size, tdx_jsn_document *doc, tdx_e
             goto failed;
         }
         /* The width invariant the format actually has. */
-        for (row = 0; row < data_rows->child_count; ++row) {
-            const tdx_json_node *cells = tdx_json_at(&doc->json, data_rows, row);
+        if (data_rows->child_count > TDX_JSON_NODES_MAX - doc->row_count) {
+            tdx_error_set(err, "JSN row index exceeds the node budget");
+            goto failed;
+        }
+        if (doc->row_count + data_rows->child_count > doc->row_capacity) {
+            size_t capacity = doc->row_capacity ? doc->row_capacity : 64;
+            size_t *grown;
+            while (capacity < doc->row_count + data_rows->child_count)
+                capacity *= 2;
+            grown = (size_t *)realloc(doc->row_nodes, capacity * sizeof(*grown));
+            if (!grown) {
+                tdx_error_set(err, "out of memory while indexing JSN rows");
+                goto failed;
+            }
+            doc->row_nodes = grown;
+            doc->row_capacity = capacity;
+        }
+        cells = tdx_json_first(&doc->json, data_rows);
+        for (row = 0; row < data_rows->child_count; ++row,
+             cells = tdx_json_next(&doc->json, cells)) {
             if (!cells || cells->type != TDX_JSON_ARRAY) {
                 tdx_error_set(err, "JSN group %zu row %zu is not an array", index, row);
                 goto failed;
             }
+            doc->row_nodes[doc->row_count + row] = (size_t)(cells - doc->json.nodes);
             if (cells->child_count != headers->child_count) {
                 tdx_error_set(err,
                               "JSN group %zu row %zu has %zu cells for %zu columns; a row must "
@@ -84,7 +119,8 @@ int tdx_jsn_parse(const uint8_t *data, size_t size, tdx_jsn_document *doc, tdx_e
             doc->groups = grown;
             doc->group_capacity = capacity;
         }
-        doc->groups[doc->group_count].json_index = index;
+        doc->groups[doc->group_count].json_index = (size_t)(group - doc->json.nodes);
+        doc->groups[doc->group_count].headers_index = (size_t)(headers - doc->json.nodes);
         doc->groups[doc->group_count].first_row = doc->row_count;
         doc->groups[doc->group_count].row_count = data_rows->child_count;
         doc->groups[doc->group_count].column_count = headers->child_count;
@@ -94,7 +130,7 @@ int tdx_jsn_parse(const uint8_t *data, size_t size, tdx_jsn_document *doc, tdx_e
     return TDX_OK;
 
 failed:
-    tdx_jsn_document_free(doc);
+    tdx_jsn_document_clear(doc);
     return TDX_ERR;
 }
 
@@ -117,7 +153,9 @@ static const tdx_json_node *group_node(const tdx_jsn_document *doc,
                                        const tdx_jsn_group *group) {
     if (!doc || !group)
         return NULL;
-    return tdx_json_at(&doc->json, tdx_json_root(&doc->json), group->json_index);
+    if (!doc->json.valid || group->json_index >= doc->json.node_count)
+        return NULL;
+    return &doc->json.nodes[group->json_index];
 }
 
 const char *tdx_jsn_column_name(const tdx_jsn_document *doc, const tdx_jsn_group *group,
@@ -127,7 +165,8 @@ const char *tdx_jsn_column_name(const tdx_jsn_document *doc, const tdx_jsn_group
 
     if (!node || column >= group->column_count)
         return NULL;
-    headers = tdx_json_member(&doc->json, node, "colheader");
+    headers = group->headers_index < doc->json.node_count
+                  ? &doc->json.nodes[group->headers_index] : NULL;
     if (!headers)
         return NULL;
     return tdx_json_text(&doc->json, tdx_json_at(&doc->json, headers, column));
@@ -136,17 +175,13 @@ const char *tdx_jsn_column_name(const tdx_jsn_document *doc, const tdx_jsn_group
 static const tdx_json_node *cell_node(const tdx_jsn_document *doc, const tdx_jsn_group *group,
                                       size_t row_in_group, size_t column) {
     const tdx_json_node *node = group_node(doc, group);
-    const tdx_json_node *rows;
     const tdx_json_node *cells;
 
     if (!node || row_in_group >= group->row_count)
         return NULL;
-    rows = tdx_json_member(&doc->json, node, "data");
-    if (!rows)
+    if (group->first_row > doc->row_count || row_in_group >= doc->row_count - group->first_row)
         return NULL;
-    cells = tdx_json_at(&doc->json, rows, row_in_group);
-    if (!cells)
-        return NULL;
+    cells = &doc->json.nodes[doc->row_nodes[group->first_row + row_in_group]];
     return tdx_json_at(&doc->json, cells, column);
 }
 
@@ -173,7 +208,7 @@ int tdx_jsn_cell_json(const tdx_jsn_document *doc, const tdx_jsn_group *group,
         text = tdx_json_text(&doc->json, node);
         if (!text)
             return tdx_buf_append(out, "\"\"", 2, err);
-        return tdx_buf_append_printf(out, err, "\"%.*s\"", (int)node->text_length, text);
+        return tdx_format_json_string_n(out, text, node->text_length, err);
     default:
         /* A nested container in a cell is not part of this format; emitting it as
          * a string keeps the output well formed instead of inventing a shape. */
@@ -239,8 +274,16 @@ int tdx_jsn_gbk_to_utf8(const uint8_t *data, size_t size, tdx_buf *out, tdx_erro
         tdx_error_set(err, "GBK conversion needs an output buffer");
         return TDX_ERR;
     }
-    if (!data || size == 0)
+    if (size == 0)
         return TDX_OK;
+    if (!data) {
+        tdx_error_set(err, "GBK conversion needs a valid input byte view");
+        return TDX_ERR;
+    }
+    if (size > INT_MAX) {
+        tdx_error_set(err, "GBK input is too large for the platform converter");
+        return TDX_ERR;
+    }
 #ifdef _WIN32
     {
         /* 936 is the system's GBK.  Using it rather than an embedded table keeps
@@ -294,9 +337,33 @@ int tdx_jsn_gbk_to_utf8(const uint8_t *data, size_t size, tdx_buf *out, tdx_erro
         }
     }
 #else
-    tdx_error_set(err,
-                  "GBK conversion needs the platform code page, which this build does not have");
-    return TDX_ERR;
+    {
+        iconv_t converter = iconv_open("UTF-8", "GBK");
+        char *input = (char *)(uintptr_t)data;
+        char *output;
+        size_t input_left = size;
+        size_t output_left;
+        size_t start = out->len;
+        size_t converted;
+        if (converter == (iconv_t)-1) {
+            tdx_error_set(err, "iconv cannot open the GBK code page");
+            return TDX_ERR;
+        }
+        if (size > (SIZE_MAX - 1) / 3 || tdx_buf_reserve(out, size * 3 + 1, err) != TDX_OK) {
+            iconv_close(converter);
+            return TDX_ERR;
+        }
+        output = (char *)out->data + start;
+        output_left = out->cap - start;
+        converted = iconv(converter, &input, &input_left, &output, &output_left);
+        iconv_close(converter);
+        if (converted == (size_t)-1 || input_left != 0) {
+            tdx_error_set(err, "the payload is not valid GBK (%zu bytes)", size);
+            return TDX_ERR;
+        }
+        out->len = (size_t)(output - (char *)out->data);
+        return TDX_OK;
+    }
 #endif
 }
 

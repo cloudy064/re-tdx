@@ -268,8 +268,8 @@ int tdx_snapshot_parse(const uint8_t *payload, size_t size, size_t requested, td
 int tdx_snapshot_fetch(tdx_connection *connection, const tdx_code *codes, size_t count,
                        tdx_snapshot *out, size_t out_capacity, size_t *out_count,
                        tdx_error *err) {
-    tdx_buf request;
-    tdx_buf response;
+    tdx_buf request = {0};
+    tdx_buf response = {0};
     int result = TDX_ERR;
 
     if (!connection || !out) {

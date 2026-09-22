@@ -241,8 +241,8 @@ int tdx_finance_parse(const uint8_t *payload, size_t size, tdx_finance_record *o
 int tdx_finance_fetch(tdx_connection *connection, const tdx_code *codes, size_t count,
                       tdx_finance_record *out, size_t capacity, size_t *out_count,
                       tdx_error *err) {
-    tdx_buf request;
-    tdx_buf response;
+    tdx_buf request = {0};
+    tdx_buf response = {0};
     int result = TDX_ERR;
 
     if (!connection || !out) {

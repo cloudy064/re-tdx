@@ -52,7 +52,7 @@ static void test_category_keys(void) {
 
 static void test_request(void) {
     tdx_code security;
-    tdx_buf request;
+    tdx_buf request = {0};
     tdx_error error;
     error.message[0] = '\0';
     tdx_buf_init(&request);
@@ -318,7 +318,7 @@ static void test_json_rendering(void) {
     size_t count = 0;
     size_t blocks = 0;
     tdx_code security = make_code(0, "000001");
-    tdx_buf line;
+    tdx_buf line = {0};
     tdx_error error;
     char text[8192];
     size_t copy;

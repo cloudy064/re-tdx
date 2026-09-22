@@ -1,5 +1,6 @@
 /* tdx_daily.c - the local .day daily-bar files. */
 #include "tdx_daily.h"
+#include "tdx_date.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -32,18 +33,7 @@ static float f32_at(const uint8_t *data, size_t offset) {
 /* A real calendar date, including leap years.  Measured over 4,053,117 records in 1,130
  * files: not one is anything else, so this rejects nothing that exists. */
 static int date_is_sane(uint32_t date) {
-    static const unsigned lengths[13] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    unsigned year = date / 10000;
-    unsigned month = date / 100 % 100;
-    unsigned day = date % 100;
-
-    if (year < 1900 || year > 2200 || month < 1 || month > 12 || day < 1)
-        return 0;
-    if (day > lengths[month]) {
-        int leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-        return month == 2 && leap && day == 29;
-    }
-    return 1;
+    return date / 10000 >= 1900 && date / 10000 <= 2200 && tdx_date_valid(date);
 }
 
 int tdx_daily_parse(const uint8_t *data, size_t size, const char *code, tdx_daily_bar *out,

@@ -1,6 +1,6 @@
 /* gbbq_fixtures.h - real encrypted GBBQ records, GENERATED. Do not hand edit.
  *
- * Produced by output/make_gbbq_fixtures.py, which slices five 29-byte records
+ * Produced by c/tools/generators/make_gbbq_fixtures.py, which slices five 29-byte records
  * out of the live C:\new_tdx\T0002\hq_cache\gbbq file and writes a synthetic
  * 4-byte header declaring them.  The ciphertext is real, so the test drives the
  * actual cipher; the header is synthetic because the real one declares 193,370

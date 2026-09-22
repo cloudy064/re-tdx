@@ -285,7 +285,7 @@ static void test_cross_document_coupons(void) {
     CHECK(extra.payment_dates.present, "the overview carries the payment dates");
     CHECK(extra.payment_rates.present, "the overview carries the payment rates");
     {
-        tdx_buf dates;
+        tdx_buf dates = {0};
         size_t commas = 0;
         size_t position;
         tdx_buf_init(&dates);
@@ -351,7 +351,7 @@ static void test_rendering(void) {
     tdx_convertible_extra extra;
     tdx_convertible_join_flags flags;
     tdx_code identity = code_of(1, "110076");
-    tdx_buf line;
+    tdx_buf line = {0};
     const char *text;
     int depth = 0;
     int in_string = 0;

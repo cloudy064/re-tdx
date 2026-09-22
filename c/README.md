@@ -4,7 +4,15 @@
 研究工具 `../native` **互不依赖**：C++ 版本保留为协议证据与逐字段对照物，
 这个目录是要做成生产服务的实现。
 
+工程分层、输出对象所有权、SSE 最新状态语义、缓存提交和验证入口见
+[工程边界与验证](docs/engineering.md)。命令实现位于 `src/cli/`，`src/main.c`
+只负责进程入口；每个命令有自己的参数结构和参数注册表。
+本次工程评审的十组修复及验证结果见 [修复清单](docs/engineering-review-fixes.md)。
+
 一句话定位：**上游只能轮询（协议没有增量接口），增量在本进程里算出来。**
+
+文中各轮实测规模、耗时和样本数字保留为当次采集证据，不代表当前市场规模或性能保证。
+历史 `output/...` 路径均相对仓库根目录；这些本机证据不是干净构建或生成检查的依赖。
 
 ## 为什么单独做一个 C 版本
 
@@ -14,13 +22,17 @@
 
 ## 目录
 
+下面列出主要模块；完整编译单元与测试注册以 [CMakeLists.txt](CMakeLists.txt) 为准。
+
 ```
 c/
   CMakeLists.txt          project(... LANGUAGES C)
+  CMakePresets.json       GCC / Clang sanitizer / MinGW / MSVC / fuzz 预设
   include/
     tdx_l1.h              umbrella header
     tdx_error.h           状态码 + 错误消息
     tdx_bytes.h           可增长缓冲、小端读写、printf 式追加
+    tdx_date.h            共享 Gregorian 日期校验与日序数
     tdx_thread.h          Win32 CRT / pthreads 线程、互斥、条件变量
     tdx_endpoint.h        端点解析 + connect.cfg HQHOST 发现
     tdx_frame.h           7709 请求组帧 / 响应解帧（16 字节头 + zlib）
@@ -28,7 +40,9 @@ c/
     tdx_directory.h       0x044D/0x044E 证券目录、品种与板块分类
     tdx_pool.h            持久连接池 + 并行批调度
     tdx_state.h           变更掩码 + 上一值哈希表
-    tdx_format.h          唯一的 JSON 渲染路径（CLI 与 Hub 共用）
+    tdx_format.h          L1 报价与事件的共享 JSON 渲染（CLI 与 Hub 共用）
+    tdx_json_write.h      所有 renderer 共用的按长度字符串转义
+    tdx_directory_json.h  证券目录的 JSONL 渲染
     tdx_hub.h             常驻 Hub：裁剪 + 分层节拍 + 订阅者队列
     tdx_serve.h           只读 HTTP / SSE 服务
     tdx_md5.h             RFC 1321 MD5（下载校验用）
@@ -52,6 +66,7 @@ c/
     tdx_limits_json.h     涨跌停记录的 JSONL 渲染
     tdx_json.h            有界 JSON 解析器
     tdx_jsn.h             JSN 表格格式与 GBK 转换
+    tdx_jsn_json.h        原始行、冲突列名消歧与汇总的 JSONL 渲染
     tdx_bonds.h           债券字段映射与单位语义
     tdx_bonds_json.h      债券行的 JSONL 渲染
     tdx_convertible.h     可转债概览字段映射
@@ -69,6 +84,7 @@ c/
     tdx_professional.h     professional_data .dat 解析与字段表
     tdx_professional_json.h 该族的 JSONL 渲染
     tdx_professional_finance.h 季度财务包（定长表，零拷贝读取）
+    tdx_professional_finance_json.h 财务包文档、行和字段的 JSONL 渲染
     tdx_zip.h              够用即止的 ZIP 读取（EOCD/中央目录/CRC）
     tdx_daily.h            本地 .day 日线（32 字节记录 + 按品种的价格口径）
     tdx_daily_json.h       日线 bar 与汇总的 JSONL 渲染
@@ -78,6 +94,7 @@ c/
     tdx_industry.h         行业估值资源（同资源内两种成员计数互证）
     tdx_industry_json.h    行业行与股票-行业行的 JSONL 渲染
     tdx_limit.h            hqrule.dat 的涨跌停规则与限价计算
+    tdx_limit_json.h       本地涨跌停规则与限价的 JSONL 渲染
     tdx_valuation.h        指数估值：当前表 + PE/PB 历史合并
     tdx_valuation_json.h   指数/历史点/合并报告/基金的 JSONL 渲染
     tdx_ranking.h          0x054B 分类行情排名（价格是相对收盘的差值）
@@ -93,6 +110,10 @@ c/
     tdx_zst_json.h        快照的 JSON 渲染
     tdx_zst_day.h         「一只票 + 一个日期」的取数编排
   src/
+    main.c                进程入口，调用 CLI 分发并转换退出码
+    cli/                  参数类型/注册表/日期和输出边界/command_*.c 编排
+    tdx_date.c  tdx_cache.c  tdx_cache.h (internal)  tdx_json_write.c
+    tdx_directory_json.c  tdx_jsn_json.c  tdx_limit_json.c
     tdx_bytes.c  tdx_text.c  tdx_thread.c  tdx_endpoint.c  tdx_frame.c
     tdx_quote.c  tdx_directory.c  tdx_pool.c  tdx_state.c  tdx_format.c
     tdx_hub.c  tdx_serve.c  tdx_md5.c  tdx_download.c  tdx_trades.c
@@ -107,14 +128,20 @@ c/
     tdx_subscription.c  tdx_subscription_json.c  tdx_bond_math.c
     tdx_pricing.c  tdx_pricing_json.c  tdx_newbond.c  tdx_newbond_json.c
     tdx_professional.c  tdx_professional_json.c
-    tdx_professional_finance.c  tdx_zip.c  tdx_daily.c  tdx_daily_json.c
+    tdx_professional_finance.c  tdx_professional_finance_json.c
+    tdx_zip.c  tdx_daily.c  tdx_daily_json.c
     tdx_minute.c  tdx_minute_json.c  tdx_industry.c  tdx_industry_json.c
     tdx_limit.c  tdx_valuation.c  tdx_valuation_json.c
     tdx_ranking.c  tdx_ranking_json.c  tdx_seal.c  tdx_seal_json.c
     tdx_panorama.c  tdx_panorama_json.c  tdx_panorama_views.c (GENERATED)
     tdx_blocks.c  tdx_blocks_json.c
-    tdx_zst_day.c  main.c
+    tdx_zst_day.c
   tests/
+    test_bytes.c  test_date.c  test_cache.c  test_cli.c
+    test_serve.c  test_hub_lifecycle.c  test_domain_renderers.c
+    verify_json_output.py  verify_domain_renderers.py  test_cli_contracts.py
+    fuzz_codecs.c          JSON / JSN / frame 的有界 fuzz 入口
+    fixtures/inputs/       保留的最小输入；fixtures/sources.json 记录来源与哈希
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
     test_pool.c   test_state.c  test_hub.c  test_zst.c  test_download.c
     test_trades.c  test_kline.c  kline_fixtures.h (generated)
@@ -149,11 +176,17 @@ c/
     test_blocks.c (the three file shapes, built; the hierarchy arithmetic)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
+  tools/
+    generate.py  generated.json  generators/  README.md
+  docs/
+    engineering.md  engineering-review-fixes.md
 ```
 
 ## 构建
 
-需要 CMake ≥ 3.20、C11 编译器、zlib。
+需要 CMake ≥ 3.20、C11 编译器、zlib；下面的预设和命令使用 Ninja。
+POSIX 构建还需要 pthreads 和 iconv（Linux 通常由 libc 提供）。
+独立 JSON 契约、离线 CLI 契约和生成检查需要 Python 3.8 或更新版本。
 
 ```powershell
 # 关键：必须把编译器自己的 bin 目录放进 PATH，否则 gcc 会静默失败（exit 1、零输出）
@@ -166,12 +199,15 @@ cmake --build build/l1stream-gcc
 ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
-已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-40/40 测试通过、0 warning。
+2026-09-22 已验证环境：Windows MSYS2 UCRT64 GCC 15.1.0、MSVC 19.50，以及 Linux Clang 22.1.3
+（ASan/UBSan）。启用 `BUILD_TESTING` 且 CMake 检测到 Python 时，该次完整 CTest 为 51 项，
+三套环境均 51/51 通过；未检测到 Python 时不会注册四项 Python 检查。
+生成检查、独立 JSON 契约和详细验证记录见 [修复清单](docs/engineering-review-fixes.md)。
 
-`test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
+`test_zst` 包含可选的真实样本检查，默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
-文件不在时打印 `skip:` 并以 0 退出；后者在构建目录里自建一个 `connect.cfg` 夹具。
+样本缺失时仅跳过对应检查，存在但读失败或解码失败会使测试失败。
+`test_endpoint` 在构建目录里自建一个 `connect.cfg` 夹具，不需要真实终端安装。
 
 ### 踩过的工具链坑
 
@@ -182,7 +218,9 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
   自带的那份。
 - MinGW 在 `-std=c11` 下默认链接旧 MSVCRT 的 `printf`（不支持 `%zu`）；
   CMakeLists 对 MINGW 加了 `__USE_MINGW_ANSI_STDIO=1`。
-- `FindZLIB` 找不到时 CMakeLists 退回 `-lz`，走编译器 sysroot。
+- `FindZLIB` 找不到时 CMakeLists 退回库名 `z`；这适用于能从 sysroot 找到 zlib 的工具链。
+  MSVC 应显式提供可兼容的 zlib 或 vcpkg toolchain，并让运行时 DLL 位于 PATH，见
+  [生成与构建说明](tools/README.md)。
 
 ## 命令
 
@@ -243,7 +281,7 @@ tdx-l1stream seal --security sz000504 --root C:\new_tdx `
                  --output output\seal-000504.jsonl
 
 # 下载分钟线并写成本地 .lc1（终端自己读的那种格式）
-tdx-l1stream kline --security sh600519 --period 1m --limit 300 `
+tdx-l1stream kline --security sh600519 --period 1m --page-size 300 --max-pages 1 `
                   --lc1-output output\lc1\sh600519.lc1 `
                   --output output\kline-1m.jsonl
 
@@ -251,7 +289,7 @@ tdx-l1stream kline --security sh600519 --period 1m --limit 300 `
 tdx-l1stream panorama --output output\panorama-catalog.jsonl
 
 # 再看某个视图的类型化投影
-tdx-l1stream panorama --view quality-rating --limit 100 `
+tdx-l1stream panorama --view quality-rating --max-records 100 `
                      --output output\panorama-quality.jsonl
 
 # 板块层级（读本机三份缓存文件）；--members / --assignments 附带成员与归属
@@ -319,7 +357,7 @@ tdx-l1stream jsn --resource list/zq_gz201_1.jsn --bonds --root C:\new_tdx `
 tdx-l1stream jsn --resource list/kzz_kzzsy201_1.jsn --convertible `
                 --root C:\new_tdx --output output\convertible.jsonl
 
-# 六份文档一次取回并连接（这才是参考实现的完整视图）
+# 六份核心文档 + 两份换股补充文档取回并连接
 tdx-l1stream convertible --root C:\new_tdx `
                        --output output\convertible-join.jsonl
 
@@ -1245,10 +1283,11 @@ SH110076 的回售是 `30/30`/70%、赎回是 `15/30`/130%、下修是 `15/30`/8
 （132024 读出了 110075 的转股价 6.17）；以及 `from_overview` 在替换之后才算，
 把换股债误报成"概览提供了它"。
 
-### 未移植
+### 后续交付的独立视图
 
-- 参考实现的**待发**（`list/dfkzz201_1.jsn` 等）、**申购**（`list/func_kkzss101_1.jsn`）、
-  **定价**（`list/gxjty_zq_kzzsy101_1.jsn`）三个视图。
+本轮当时尚未移植的**待发**（`list/dfkzz201_1.jsn` 等）、**申购**
+（`list/func_kkzss101_1.jsn`）、**定价**（`list/gxjty_zq_kzzsy101_1.jsn`）
+已经分别由 `pending`、`subscription`、`pricing` 命令交付，见后文。
 
 证据：`output/convertible_join_evidence.txt`。
 
@@ -1336,11 +1375,11 @@ SH605589 / SZ000422 / SZ002997）。若把它们当成同一份数据的不同�
 形如 `convertible-subscription:<市场>:<债券代码>:<申购日>`，照参考实现的拼法，
 便于识别"同一个事件出现两次"。申购日缺失时 id 以冒号结尾——参考实现也是这样。
 
-### 未移植
+### 后续交付的独立视图
 
-- 参考实现的**新债投影**（`list/gxjty_zq_xkzz102_1.jsn`）与申购行的匹配报告
-  （按申购代码优先、标的兜底匹配，报告申购日不一致与发行规模差额，并做 hybrid/stale 分类）；
-- **定价视图**（`list/gxjty_zq_kzzsy101_1.jsn`）。
+本轮当时尚未移植的**新债投影**（`list/gxjty_zq_xkzz102_1.jsn`）与申购匹配报告
+已经由 `newbond` 命令交付；**定价视图**（`list/gxjty_zq_kzzsy101_1.jsn`）
+已经由 `pricing` 命令交付，见后文。
 
 证据：`output/subscription_verification_evidence.txt`。
 
@@ -1597,6 +1636,10 @@ tdxgp/gpsh880471.dat          板块级
 
 ### 财务半边：季度 ZIP 包（`professional --zip`）
 
+`--member NAME` 显式选择 ZIP 成员；省略时读取首个成员。旧 `--zip ... --kind NAME`
+仍作为成员名的兼容写法，若同时给出则 `--member` 优先。读取交易 `.dat` 时，
+`--kind stock|market|board` 则选择字段表，两种模式的含义不同。
+
 `tdxfin/gpcw.txt` 列出 **147 个季度包**，每个是一个 ZIP，内含**单个成员**例如
 `gpcw20260630.dat`。成员是一张定长表：
 
@@ -1664,7 +1707,8 @@ tdxgp/gpsh880471.dat          板块级
 `blocks_loader.cpp` 只读三个本地文件——`tdxzs3.cfg`（32,730 字节）、`tdxhy.cfg`（150,440 字节）、
 `infoharbor_block.dat`（742,056 字节），**三份本机都在**——外加本地证券目录。
 层级本身（`parent_block_id`/`level`/`is_leaf`）由这些块构造。
-⇒ **完全离线可得、可验证**，且是已交付的 `hyzt` 的正上方一层。**这是本目标尚未完成的部分。**
+⇒ **完全离线可得、可验证**，且是已交付的 `hyzt` 的正上方一层。
+这是第 21 轮识别的缺口，已在第 22 轮作为 `blocks` 交付。
 
 **② 扩展市场（期货/期权）分钟线 → 范围外。** 参考用另一套命令（`0x23F0` 合约数量、
 `0x23F5` 合约信息、`0x23FA` 行情与分钟线），自称 **"tdx-7727"** 传输。实测：
@@ -2028,8 +2072,9 @@ points 3093，both_sides 3093，pe_only 0，pb_only 0，complete true
 
 ### 三个自己的错误
 
-1. **includes 加错锚点**：`main.c` 不 include `tdx_quote.h`（它按模块逐个 include），
+1. **includes 加错锚点**：当时未拆分的 `main.c` 不 include `tdx_quote.h`（它按模块逐个 include），
    于是头文件根本没加进去，整片编译失败。
+   当前命令代码已在 `src/cli/command_*.c`，`main.c` 只保留进程入口。
 2. **`--category` 已被 `securities` 占用**（`all|a_share|etf|index`，默认 `a_share`），
    我的分类解析一开始拒了这个默认值，于是命令直接不可用；改为接受该目录分类的拼写
    （`a_share` → 6），不再多出一个选项。
@@ -2158,7 +2203,7 @@ if (bid2.volume_hand && ...)                   /* 量却在 */
 1. **脚本报告了意图而不是结果**：`add_lc1_pack_header.py` 在内存里改完后**又从磁盘重读**，
    把改动丢掉、写回未修改的内容，**却仍打印 "header extended"** ✗
 2. 同一类还有一次：一句 include 的替换**没匹配上**，脚本照样打印成功；
-3. **与第 17 轮同一类错误重复了一次**：`main.c` 按模块逐个 include，我又以为它会自动拿到
+3. **与第 17 轮同一类错误重复了一次**：当时的 `main.c` 按模块逐个 include，我又以为它会自动拿到
    （这次编译器立刻拦住了）；
 4. 测试里我把**年份界**当成了**字宽界**（见上）。
 
@@ -2215,8 +2260,9 @@ if (bid2.volume_hand && ...)                   /* 量却在 */
 **扁平信封里的 `type`/`resource`/`group`/`row` 会被同名的列遮蔽** ⇒ 任何"重复键留一个"的解析器
 都会丢掉另一边 ⇒ **该列数据不可达** ✗ 我的核对脚本正是因此把一份明明存在的资源数成 0 行。
 
-现在同名列出为 `<列名>_cell`，**并在汇总里报告 `columns_renamed`**：
-不丢数据，且调用方看得见发生过。
+现在同名列优先出为 `<列名>_cell`；若与原始列或先前输出列冲突，则依次尝试
+`<列名>_cell_2`、`<列名>_cell_3` 等。重复原始列也用该规则消歧，保留所有列值，
+**并在汇总里报告 `columns_renamed`**。完整规则见 [JSON 输出边界](docs/engineering.md#json-输出边界)。
 
 ### 空值约定
 
@@ -2305,10 +2351,11 @@ if (bid2.volume_hand && ...)                   /* 量却在 */
 | `GET /` | 用法页 |
 | `GET /health` | 存活检查 |
 | `GET /status` | Hub 计数，见下 |
-| `GET /api/v1/market/snapshot?codes=a,b` | 当前存量值，一次性 |
+| `GET /api/v1/market/snapshot?codes=a,b` | 缓存存量值，一次性；不触发取数，附 `freshness` |
 | `GET /api/v1/market/stream[?codes=a,b]` | **SSE**；省略 `codes` 即全 universe |
 
-SSE 参数：`max_events=N`（取够即断）、`wait_timeout_ms=N`（空闲多久断开）。
+SSE 参数：`max_events=N`（正数表示取够即断，0 不限）、`wait_timeout_ms=N`
+（范围 1000..600000；等待超时发送 `: keep-alive` 注释并继续连接，不是空闲断开时间）。
 
 事件类型：
 
@@ -2318,13 +2365,14 @@ SSE 参数：`max_events=N`（取够即断）、`wait_timeout_ms=N`（空闲多�
 {"type":"heartbeat","sequence":3,"subscribed":5574,"total_events":1128}
 ```
 
-迟到订阅者**立即收到已订阅证券的快照**（`replay`），之后只收变化。
+迟到订阅者会把已缓存的订阅证券快照加入待发队列（`replay`）。读取前若证券再次变化，
+待发快照可被含最新完整记录的 `change` 替代；消费者始终按完整记录维护最新状态。
 
-`/status` 关键字段：`universe` / `polled`（本轮实际轮询数）/ `rounds` /
+`/status` 关键字段：`universe` / `polled`（订阅裁剪后候选证券数，含尚未到期的冷档）/ `rounds` /
 `failed_rounds` / `records` / `events` / `last_round_ms` / `interval_ms` /
 `effective_interval_ms` / `tier_warm_ms` / `tier_cold_ms` / `demote_rounds` /
-`tier_hot` / `tier_warm` / `tier_cold` / `subscribers` / `queued` / `dropped` /
-`last_error`。
+`tier_hot` / `tier_warm` / `tier_cold` / `subscribers` / `queued` / `dropped` / `coalesced` /
+`last_round_batches` / `consecutive_failures` / `retry_in_ms` / `last_error`。
 
 ## 调度：裁剪 + 分层节拍
 
@@ -2468,25 +2516,34 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
   "解析数 == 请求数"。少于请求数一律让整轮失败。
 - 单批失败会在下一个节点重连重试（默认 3 次），失败批次数进统计。
 - 任一帧错误即关闭该连接（流已错位，不复用）。
-- 订阅者队列有界：容量为 `max(queue_limit, 订阅证券数)`，即至少能装下自己那份
-  完整快照；之后的下行变化按"丢最旧"处理并累加 `dropped`。
+- 订阅者队列有界，按证券合并尚未发送的最新完整记录；安静证券的最后一条更新不会被其他
+  证券挤掉。`coalesced` 统计合并次数，`dropped` 保留实际丢失计数。SSE 提供最新状态，
+  不承诺保留轮询间每一次变化。快照另带采集时间、年龄和 `stale`。
 - 每轮结束广播条件变量，`tdx_hub_next` 不忙等。
-- **优雅退出**：`SIGINT`/`SIGTERM` 处理器只置标志并关闭监听 socket（这是把阻塞
-  的 `accept()` 拉出来的唯一可靠办法）；运行器随后 `tdx_hub_stop()`（停轮询 +
-  唤醒所有阻塞订阅者，但 hub 仍存活），最多等 5 s 让在途连接收尾，再返回让
-  调用方依次释放 hub 与连接池。
+- **优雅退出**：服务实例停止接收并关闭已登记连接，等待全部 handler 结束后才释放它们
+  依赖的状态。请求头读取有总截止时间，总连接数有独立上限。Hub 停止会等待当前有界 fetch
+  返回；调用方随后释放连接池和采集上下文。初始化失败也遵循相同的依赖顺序。
+- 上游连续失败使用有上限的退避，成功恢复后重置；状态接口暴露连续失败次数和下次重试时间。
 
 ## 测试
 
+下表按源文件名列出主要契约；CTest 名称为 `l1stream-*`。完整注册项与本轮验证记录见
+[修复清单](docs/engineering-review-fixes.md)，不能用历史某一轮的迁移数量代替当前测试总数。
+
 | 套件 | 覆盖 |
 |---|---|
+| `test_bytes`、`test_date`、`test_cache` | 缓冲复用与失败状态、Gregorian 边界、原子缓存故障注入与坏缓存恢复 |
+| `test_cli`、`test_cli_contracts.py` | 命令专属参数与日期校验、五类离线输出契约、刷新和关闭错误 |
+| `test_serve`、`test_hub_lifecycle` | 回环 HTTP/SSE、连接上限、停止与在途 fetch、失败退避、最新值合并和缓存新鲜度 |
+| `test_domain_renderers`、`verify_domain_renderers.py` | Windows 路径、控制字符与 NUL、JSN 冲突列名、债券日程和非有限值的独立 JSON 契约 |
+| `verify_json_output.py`、`tools/generate.py --check` | 独立 JSON 语法/文本契约、离线生成输入哈希与产物一致性 |
 | `test_frame` | 组帧字节级断言、响应头、zlib 往返与损坏流 |
 | `test_quote` | 证券解析、价格刻度、varint 往返、深度记录编解码、拒绝路径 |
 | `test_directory` | 品种/板块分类 32 例、0x044D 页解析、市场号覆盖、截断 |
 | `test_endpoint` | 端点解析、`connect.cfg` 大小写混写键、PrimaryHost 轮转、缺文件回退 |
 | `test_pool` | **回环假 7709 服务器**上的批切分、顺序、截断、重连 |
 | `test_state` | 八组差分、多组并集、哈希表扩容零丢失、市场不碰撞 |
-| `test_hub` | 首轮快照、相同轮静默、变化掩码、过滤订阅、未知代码、队列丢弃、失败计数、快照 JSON、分层梯子 |；**status 必须转述 fetcher 报告的批次数**（假 fetcher 按 `ceil(count/10)` 报告，断言 hub 不会自己编一个、也不会在一轮确实取过数之后报 0）
+| `test_hub` | 首轮快照、相同轮静默、变化掩码、过滤订阅、未知代码、按证券合并最新值、失败计数、快照 JSON、分层梯子；status 转述 fetcher 报告的批次数，覆盖 `ceil(count/10)` 的注入统计 |
 | `test_zst` | tag 流分帧与拒绝路径、值的数值/文本等价、状态累加、只带变化时的前向折叠、多证券隔离、逻辑组掩码、JSON 渲染（含 `null` 与原始 tag 表）、**真实样本 4647 条的不变量与末日终值** |
 | `test_download` | RFC 1321 MD5 向量与分块喂入一致、路径校验、`0x02C5`/`0x06B9` 请求字节级断言、两种应答的解析与拒绝、`day` 路径拼装 |
 | `test_trades` | 分钟/买卖方向/刻度/日历校验、两种请求的字节级断言、**活体应答原文**的五个 varint 记录解码、负数增量与累加、分钟越界与悬挂 varint 的拒绝、分页尾部未消费检测、汇总分桶、JSONL 括号平衡与 `null` |
@@ -2525,7 +2582,9 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
 `%s` 进 JSON 产生 `\U`（根本不是 JSON 转义），以及 CRC 以 `%08x` 裸输出使
 `"member_crc":9c4fb1bf` 无法解析（JSON 数字不能以字母开头）。两行的括号都是平衡的。
-现已覆盖**全部 15 个渲染测试**（8 个用内联括号计数、7 个用本地 `braces_balanced` 辅助）。
+当时迁移的是 **15 个渲染测试**（8 个内联括号计数、7 个 `braces_balanced` 辅助）；
+这个数字描述那一轮的迁移范围。当前领域测试使用实际 JSON 解析，另有 Python 独立解析器
+检查字符串、原始 JSN 列冲突、领域输出和离线 CLI 契约，详见 [修复清单](docs/engineering-review-fixes.md)。
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；

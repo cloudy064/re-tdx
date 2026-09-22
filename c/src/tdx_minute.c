@@ -1,5 +1,6 @@
 /* tdx_minute.c - the local .lc1 one-minute bars. */
 #include "tdx_minute.h"
+#include "tdx_date.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -22,7 +23,6 @@ static float f32_at(const uint8_t *data, size_t offset) {
 }
 
 int tdx_lc1_decode_date(uint16_t word, uint32_t *out) {
-    static const unsigned lengths[13] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     unsigned year;
     unsigned remainder;
     unsigned month;
@@ -34,13 +34,8 @@ int tdx_lc1_decode_date(uint16_t word, uint32_t *out) {
     remainder = (unsigned)(word % 2048);
     month = remainder / 100;
     day = remainder % 100;
-    if (year < 2004 || year > 2200 || month < 1 || month > 12 || day < 1)
+    if (!tdx_date_valid(year * 10000u + month * 100u + day))
         return 0;
-    if (day > lengths[month]) {
-        int leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-        if (!(month == 2 && leap && day == 29))
-            return 0;
-    }
     *out = year * 10000u + month * 100u + day;
     return 1;
 }
@@ -180,7 +175,7 @@ int tdx_lc1_encode_date(uint32_t date, uint16_t *out) {
      * (y - 2004) * 2048 + month * 100 + day has to fit 65535, which makes the last date the
      * format can hold 2035-12-31: 31 * 2048 + 1231 = 64719.  A caller writing a later date
      * would otherwise get a word the reader decodes as some other year entirely. */
-    if (year < 2004 || month < 1 || month > 12 || day < 1 || day > 31)
+    if (year < 2004 || !tdx_date_valid(date))
         return 0;
     word = (year - 2004) * 2048 + month * 100 + day;
     if (word > 0xFFFFu)

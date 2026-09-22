@@ -1,6 +1,6 @@
 /* snapshot_fixtures.h - a live 0x054C reply, GENERATED. Do not hand edit.
  *
- * Produced by output/make_snapshot_fixtures.py from
+ * Produced by c/tools/generators/make_snapshot_fixtures.py from
  * output/snapshot_probe_evidence.txt, which output/dbg_snapshot_probe.c wrote
  * from the bytes a public node returned for sz000623, sz000001 and sh600000.
  * Regenerate the pair together; editing these bytes by hand would turn a

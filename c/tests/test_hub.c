@@ -309,7 +309,7 @@ static void test_unknown_code_is_rejected(void) {
     tdx_hub_destroy(hub);
 }
 
-static void test_queue_overflow_drops_oldest(void) {
+static void test_queue_coalesces_latest(void) {
     fake_feed feed;
     tdx_hub *hub = NULL;
     tdx_hub_options options;
@@ -355,8 +355,10 @@ static void test_queue_overflow_drops_oldest(void) {
         if (text) {
             memcpy(text, status.data, status.len);
             text[status.len] = '\0';
-            CHECK(strstr(text, "\"dropped\":8") != NULL,
-                  "expected eight dropped events in %s", text);
+            CHECK(strstr(text, "\"coalesced\":8") != NULL,
+                  "expected eight coalesced events in %s", text);
+            CHECK(strstr(text, "\"dropped\":0") != NULL,
+                  "coalescing must not discard a security's newest value");
             CHECK(strstr(text, "\"universe\":8") != NULL, "status must report the universe");
             CHECK(strstr(text, "\"subscribers\":1") != NULL, "status subscriber count");
             /* The hub must report the cost its fetcher reported: it decides how much
@@ -564,7 +566,7 @@ int main(void) {
     test_change_is_reported_once();
     test_filtered_subscription();
     test_unknown_code_is_rejected();
-    test_queue_overflow_drops_oldest();
+    test_queue_coalesces_latest();
     test_failed_round_is_counted();
     test_snapshot_json();
     test_idle_backoff();

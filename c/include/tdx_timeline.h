@@ -76,6 +76,8 @@ typedef struct tdx_timeline {
     int64_t reserved;    /* the reply's second header word */
 } tdx_timeline;
 
+/* Initialize fresh storage. Does not release an existing allocation: use free
+ * before reinitializing a populated timeline. free also resets all fields. */
 void tdx_timeline_init(tdx_timeline *timeline);
 void tdx_timeline_free(tdx_timeline *timeline);
 
@@ -84,6 +86,8 @@ int tdx_timeline_minute_of_day(size_t index);
 
 int tdx_timeline_build_request(int market_id, const char *code, tdx_buf *out, tdx_error *err);
 
+/* out must be initialized and empty. The caller owns any allocated points,
+ * including partial results on failure, and must free them before parsing again. */
 int tdx_timeline_parse(const uint8_t *payload, size_t size, tdx_timeline *out, tdx_error *err);
 
 /* --- session-bound ---------------------------------------------------- */

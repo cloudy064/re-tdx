@@ -109,7 +109,7 @@ static void test_path_validation(void) {
 /* --- 0x02C5 / 0x06B9 request bodies ------------------------------------ */
 
 static void test_info_request(void) {
-    tdx_buf request;
+    tdx_buf request = {0};
     tdx_error error;
     const char *path = "hishf/date/20260612/sz000623.img";
     error.message[0] = '\0';
@@ -138,7 +138,7 @@ static void test_info_request(void) {
 }
 
 static void test_chunk_request(void) {
-    tdx_buf request;
+    tdx_buf request = {0};
     tdx_error error;
     const char *path = "hishf/date/20260612/sz000623.img";
     error.message[0] = '\0';

@@ -1,10 +1,12 @@
-/* tdx_serve.c - blocking accept loop, one thread per connection. */
+/* tdx_serve.c - bounded HTTP handlers with one server-owned lifetime. */
 #include "tdx_serve.h"
 
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 #include "tdx_format.h"
 #include "tdx_state.h"
@@ -20,6 +22,8 @@ typedef SOCKET serve_socket;
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <fcntl.h>
 #include <unistd.h>
 typedef int serve_socket;
 #define SERVE_INVALID (-1)
@@ -31,10 +35,30 @@ typedef int serve_socket;
 typedef struct serve_connection {
     serve_socket client;
     tdx_hub *hub;
-    const tdx_code *universe;
-    size_t universe_size;
-    int write_timeout_ms;
+    struct tdx_server *server;
+    tdx_thread thread;
+    int active;
+    int done;
 } serve_connection;
+
+struct tdx_server {
+    tdx_hub *hub;
+    tdx_serve_options options;
+    serve_socket listener;
+    serve_connection *connections;
+    tdx_thread accept_thread;
+    tdx_mutex lock;
+    tdx_cond cond;
+    int started;
+    int stopping;
+    int joining;
+    int stopped;
+    int failed;
+    int port;
+#if defined(_WIN32)
+    int winsock_started;
+#endif
+};
 
 void tdx_serve_options_default(tdx_serve_options *options) {
     if (!options)
@@ -42,6 +66,8 @@ void tdx_serve_options_default(tdx_serve_options *options) {
     options->port = 8790;
     options->backlog = 32;
     options->write_timeout_ms = 30000;
+    options->read_timeout_ms = 10000;
+    options->max_connections = 128;
 }
 
 static void close_socket(serve_socket handle) {
@@ -54,25 +80,83 @@ static void close_socket(serve_socket handle) {
 #endif
 }
 
-/* Shutdown plumbing.  The signal handler only touches a flag and the
- * listening socket; closing it is what pulls a blocked accept() out. */
-static serve_socket g_listener = SERVE_INVALID;
-static volatile sig_atomic_t g_stopping = 0;
-static size_t g_active_connections = 0;
-static tdx_mutex g_connection_lock;
+/* Process signal handling belongs only to the compatibility wrapper. */
+static volatile sig_atomic_t g_stop_requested = 0;
 
 static void serve_on_signal(int signal_number) {
     (void)signal_number;
-    g_stopping = 1;
-    if (g_listener != SERVE_INVALID)
-        close_socket(g_listener);
-    g_listener = SERVE_INVALID;
+    g_stop_requested = 1;
+}
+
+static int server_stopping(tdx_server *server) {
+    int stopping;
+    tdx_mutex_lock(&server->lock);
+    stopping = server->stopping;
+    tdx_mutex_unlock(&server->lock);
+    return stopping;
+}
+
+static void shutdown_socket(serve_socket handle) {
+    if (handle == SERVE_INVALID)
+        return;
+#if defined(_WIN32)
+    shutdown(handle, SD_BOTH);
+#else
+    shutdown(handle, SHUT_RDWR);
+#endif
+}
+
+static int interrupted(void) {
+#if defined(_WIN32)
+    return WSAGetLastError() == WSAEINTR;
+#else
+    return errno == EINTR;
+#endif
+}
+
+static int would_block(void) {
+#if defined(_WIN32)
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
+static int set_blocking(serve_socket handle, int blocking) {
+#if defined(_WIN32)
+    u_long mode = blocking ? 0 : 1;
+    return ioctlsocket(handle, FIONBIO, &mode);
+#else
+    int flags = fcntl(handle, F_GETFL, 0);
+    if (flags < 0)
+        return -1;
+    return fcntl(handle, F_SETFL, blocking ? flags & ~O_NONBLOCK : flags | O_NONBLOCK);
+#endif
+}
+
+static int wait_readable(serve_socket handle, int timeout_ms) {
+    fd_set read_set;
+    struct timeval timeout;
+    FD_ZERO(&read_set);
+    FD_SET(handle, &read_set);
+    timeout.tv_sec = timeout_ms / 1000;
+    timeout.tv_usec = (timeout_ms % 1000) * 1000;
+    return select((int)handle + 1, &read_set, NULL, NULL, &timeout);
 }
 
 static int send_all(serve_socket handle, const char *data, size_t size) {
     size_t sent = 0;
     while (sent < size) {
-        int written = (int)send(handle, data + sent, (int)(size - sent), 0);
+        size_t remaining = size - sent;
+        int chunk = remaining > INT_MAX ? INT_MAX : (int)remaining;
+        int flags = 0;
+        int written;
+#if defined(MSG_NOSIGNAL)
+        flags = MSG_NOSIGNAL;
+#endif
+        written = (int)send(handle, data + sent, chunk, flags);
+        if (written < 0 && interrupted())
+            continue;
         if (written <= 0)
             return -1;
         sent += (size_t)written;
@@ -136,6 +220,20 @@ static const char *query_value(const char *query, const char *name, char *out,
         cursor = equals + 1;
     }
     return NULL;
+}
+
+static int query_number(const char *query, const char *name, long *value) {
+    char text[4096];
+    char *end;
+    long parsed;
+    if (!query_value(query, name, text, sizeof(text)))
+        return TDX_OK;
+    errno = 0;
+    parsed = strtol(text, &end, 10);
+    if (errno == ERANGE || end == text || *end || parsed < 0)
+        return TDX_ERR;
+    *value = parsed;
+    return TDX_OK;
 }
 
 /* Resolves a comma separated list of codes against the hub universe. */
@@ -204,18 +302,19 @@ static int resolve_codes(tdx_hub *hub, const char *text, tdx_code **out,
 static void route_stream(serve_connection *connection, const char *query) {
     tdx_error error;
     tdx_buf event;
-    tdx_buf codes_buffer;
     uint64_t subscriber;
     char value[4096];
     long max_events = 0;
     long idle_timeout = 15000;
     long emitted = 0;
+    int64_t idle_deadline;
 
     error.message[0] = '\0';
-    if (query_value(query, "max_events", value, sizeof(value)))
-        max_events = strtol(value, NULL, 10);
-    if (query_value(query, "wait_timeout_ms", value, sizeof(value)))
-        idle_timeout = strtol(value, NULL, 10);
+    if (query_number(query, "max_events", &max_events) != TDX_OK ||
+        query_number(query, "wait_timeout_ms", &idle_timeout) != TDX_OK) {
+        send_plain(connection->client, 400, "Bad Request", "invalid nonnegative integer parameter\n");
+        return;
+    }
     if (idle_timeout < 1000)
         idle_timeout = 1000;
     if (idle_timeout > 600000)
@@ -248,18 +347,22 @@ static void route_stream(serve_connection *connection, const char *query) {
                     "retry: 2000\n\n");
 
     tdx_buf_init(&event);
-    tdx_buf_init(&codes_buffer);
+    idle_deadline = tdx_monotonic_ms() + idle_timeout;
     for (;;) {
-        if (g_stopping || tdx_hub_is_stopping(connection->hub))
+        if (server_stopping(connection->server) || tdx_hub_is_stopping(connection->hub))
             break;
-        if (tdx_hub_next(connection->hub, subscriber, &event, (int)idle_timeout,
-                         &error) != TDX_OK)
+        if (tdx_hub_next(connection->hub, subscriber, &event, 100,
+                          &error) != TDX_OK)
             break;
         if (event.len == 0) {
-            if (send_text(connection->client, ": keep-alive\n\n") != 0)
-                break;
+            if (tdx_monotonic_ms() >= idle_deadline) {
+                if (send_text(connection->client, ": keep-alive\n\n") != 0)
+                    break;
+                idle_deadline = tdx_monotonic_ms() + idle_timeout;
+            }
             continue;
         }
+        idle_deadline = tdx_monotonic_ms() + idle_timeout;
         {
             char prefix[48];
             int prefix_length = snprintf(prefix, sizeof(prefix), "id: %ld\ndata: ",
@@ -276,7 +379,6 @@ static void route_stream(serve_connection *connection, const char *query) {
             break;
     }
     tdx_buf_free(&event);
-    tdx_buf_free(&codes_buffer);
     tdx_hub_unsubscribe(connection->hub, subscriber);
 }
 
@@ -348,15 +450,14 @@ static void service_connection_inner(serve_connection *connection);
 
 static void service_connection(void *context) {
     serve_connection *connection = (serve_connection *)context;
-    tdx_mutex_lock(&g_connection_lock);
-    g_active_connections++;
-    tdx_mutex_unlock(&g_connection_lock);
     service_connection_inner(connection);
+    /* The server owns the slot and thread; this wrapper alone closes its socket. */
+    tdx_mutex_lock(&connection->server->lock);
     close_socket(connection->client);
-    free(connection);
-    tdx_mutex_lock(&g_connection_lock);
-    g_active_connections--;
-    tdx_mutex_unlock(&g_connection_lock);
+    connection->client = SERVE_INVALID;
+    connection->done = 1;
+    tdx_cond_broadcast(&connection->server->cond);
+    tdx_mutex_unlock(&connection->server->lock);
 }
 
 static void service_connection_inner(serve_connection *connection) {
@@ -366,17 +467,43 @@ static void service_connection_inner(serve_connection *connection) {
     char method[8];
     char path[512];
     char query[4096];
+    int64_t deadline = tdx_monotonic_ms() + connection->server->options.read_timeout_ms;
 
     method[0] = '\0';
     path[0] = '\0';
     query[0] = '\0';
 
-    /* Read once; a small GET always arrives in one or two segments. */
+    /* One absolute deadline prevents a byte-at-a-time sender extending its life. */
     while (used < sizeof(request) - 1) {
-        int count = (int)recv(connection->client, request + used,
-                              (int)(sizeof(request) - 1 - used), 0);
+        int64_t remaining = deadline - tdx_monotonic_ms();
+        int ready;
+        int count;
+        if (server_stopping(connection->server))
+            return;
+        if (remaining <= 0) {
+            send_plain(connection->client, 408, "Request Timeout", "header deadline exceeded\n");
+            return;
+        }
+        /* Winsock shutdown need not wake a select already waiting on this
+         * socket. Short waits recheck the server stop flag independently. */
+        ready = wait_readable(connection->client,
+                              remaining > 100 ? 100 : (int)remaining);
+        if (ready < 0 && interrupted())
+            continue;
+        if (ready == 0)
+            continue;
+        if (ready < 0)
+            return;
+        count = (int)recv(connection->client, request + used,
+                          (int)(sizeof(request) - 1 - used), 0);
+        if (count < 0 && interrupted())
+            continue;
         if (count <= 0)
             break;
+        if (memchr(request + used, '\0', (size_t)count)) {
+            send_plain(connection->client, 400, "Bad Request", "NUL in request\n");
+            return;
+        }
         used += (size_t)count;
         request[used] = '\0';
         {
@@ -389,8 +516,6 @@ static void service_connection_inner(serve_connection *connection) {
     }
     if (header_end < 0) {
         send_plain(connection->client, 400, "Bad Request", "malformed request\n");
-        close_socket(connection->client);
-        free(connection);
         return;
     }
 
@@ -400,31 +525,47 @@ static void service_connection_inner(serve_connection *connection) {
         char *space;
         if (!line_end) {
             send_plain(connection->client, 400, "Bad Request", "malformed request\n");
-            close_socket(connection->client);
-            free(connection);
             return;
         }
         *line_end = '\0';
         space = strchr(request, ' ');
         if (!space) {
             send_plain(connection->client, 400, "Bad Request", "malformed request\n");
-            close_socket(connection->client);
-            free(connection);
             return;
         }
         *space = '\0';
-        snprintf(method, sizeof(method), "%.7s", request);
+        if (strlen(request) >= sizeof(method)) {
+            send_plain(connection->client, 405, "Method Not Allowed", "GET only\n");
+            return;
+        }
+        strcpy(method, request);
         target = space + 1;
         space = strchr(target, ' ');
-        if (space)
-            *space = '\0';
+        if (!space || (strcmp(space + 1, "HTTP/1.1") != 0 &&
+                       strcmp(space + 1, "HTTP/1.0") != 0)) {
+            send_plain(connection->client, 400, "Bad Request", "invalid request line\n");
+            return;
+        }
+        *space = '\0';
+        if (*target != '/') {
+            send_plain(connection->client, 400, "Bad Request", "origin-form target required\n");
+            return;
+        }
         {
             char *mark = strchr(target, '?');
             if (mark) {
                 *mark = '\0';
-                snprintf(query, sizeof(query), "%.4095s", mark + 1);
+                if (strlen(mark + 1) >= sizeof(query)) {
+                    send_plain(connection->client, 414, "URI Too Long", "query too long\n");
+                    return;
+                }
+                strcpy(query, mark + 1);
             }
-            snprintf(path, sizeof(path), "%.511s", target);
+            if (strlen(target) >= sizeof(path)) {
+                send_plain(connection->client, 414, "URI Too Long", "path too long\n");
+                return;
+            }
+            strcpy(path, target);
         }
     }
 
@@ -448,121 +589,317 @@ static void service_connection_inner(serve_connection *connection) {
 
 /* ------------------------------------------------------------------ */
 
-int tdx_serve_run(tdx_hub *hub, const tdx_code *universe, size_t universe_size,
-                  const tdx_serve_options *options, tdx_error *err) {
+static int set_write_timeout(serve_socket client, int milliseconds) {
+#if defined(_WIN32)
+    DWORD timeout = (DWORD)milliseconds;
+    return setsockopt(client, SOL_SOCKET, SO_SNDTIMEO,
+                      (const char *)&timeout, sizeof(timeout));
+#else
+    struct timeval timeout;
+    timeout.tv_sec = milliseconds / 1000;
+    timeout.tv_usec = (milliseconds % 1000) * 1000;
+#if defined(SO_NOSIGPIPE)
+    {
+        int one = 1;
+        if (setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) != 0)
+            return -1;
+    }
+#endif
+    return setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+}
+
+/* Completed slots are joined before reuse. The active flag is set before
+ * thread creation, so neither stop nor admission can miss a pending handler. */
+static void server_accept_main(void *context) {
+    tdx_server *server = (tdx_server *)context;
+    for (;;) {
+        serve_socket client;
+        serve_connection *slot = NULL;
+        size_t index;
+        int ready;
+        tdx_error error;
+
+        tdx_mutex_lock(&server->lock);
+        for (index = 0; index < server->options.max_connections; ++index) {
+            serve_connection *candidate = &server->connections[index];
+            if (candidate->active && candidate->done) {
+                /* A done handler no longer needs the server lock. */
+                tdx_thread_join(&candidate->thread);
+                candidate->active = 0;
+            }
+        }
+        if (server->stopping) {
+            tdx_mutex_unlock(&server->lock);
+            break;
+        }
+        tdx_mutex_unlock(&server->lock);
+        ready = wait_readable(server->listener, 100);
+        if (ready < 0 && interrupted())
+            continue;
+        if (ready == 0)
+            continue;
+        if (ready < 0) {
+            tdx_mutex_lock(&server->lock);
+            server->failed = 1;
+            server->stopping = 1;
+            tdx_mutex_unlock(&server->lock);
+            break;
+        }
+        client = accept(server->listener, NULL, NULL);
+        if (client == SERVE_INVALID) {
+            if (interrupted() || would_block())
+                continue;
+            tdx_mutex_lock(&server->lock);
+            server->failed = 1;
+            server->stopping = 1;
+            tdx_mutex_unlock(&server->lock);
+            break;
+        }
+#if !defined(_WIN32)
+        if (client >= FD_SETSIZE) {
+            close_socket(client);
+            continue;
+        }
+#endif
+        if (set_blocking(client, 1) != 0 ||
+            set_write_timeout(client, server->options.write_timeout_ms) != 0) {
+            close_socket(client);
+            continue;
+        }
+        tdx_mutex_lock(&server->lock);
+        if (!server->stopping) {
+            for (index = 0; index < server->options.max_connections; ++index)
+                if (!server->connections[index].active) {
+                    slot = &server->connections[index];
+                    break;
+                }
+        }
+        if (!slot) {
+            tdx_mutex_unlock(&server->lock);
+            /* Reject immediately without allocating another thread or blocking
+             * the accept loop on a slow peer's error response. */
+            close_socket(client);
+            continue;
+        }
+        slot->client = client;
+        slot->hub = server->hub;
+        slot->server = server;
+        slot->done = 0;
+        slot->active = 1;
+        if (tdx_thread_start(&slot->thread, service_connection, slot, &error) != TDX_OK) {
+            close_socket(client);
+            slot->client = SERVE_INVALID;
+            slot->active = 0;
+        }
+        tdx_mutex_unlock(&server->lock);
+    }
+}
+
+int tdx_server_create(tdx_server **out, tdx_hub *hub,
+                      const tdx_serve_options *options, tdx_error *err) {
     tdx_serve_options defaults;
-    serve_socket listener;
+    tdx_server *server;
     struct sockaddr_in address;
     int reuse = 1;
-
-    if (!hub || !options) {
-        tdx_error_set(err, "serve needs a hub and options");
+#if defined(_WIN32)
+    int address_size = (int)sizeof(address);
+#else
+    socklen_t address_size = sizeof(address);
+#endif
+    if (!out || !hub) {
+        tdx_error_set(err, "server needs an output slot and a hub");
         return TDX_ERR;
     }
+    *out = NULL;
     tdx_serve_options_default(&defaults);
-    if (options->port < 1 || options->port > 65535) {
-        tdx_error_set(err, "serve port must be in 1..65535");
+    if (options) {
+        defaults.port = options->port;
+        defaults.backlog = options->backlog;
+        defaults.write_timeout_ms = options->write_timeout_ms;
+        if (options->read_timeout_ms)
+            defaults.read_timeout_ms = options->read_timeout_ms;
+        if (options->max_connections)
+            defaults.max_connections = options->max_connections;
+    }
+    if (defaults.port < 0 || defaults.port > 65535 || defaults.backlog < 1 ||
+        defaults.write_timeout_ms < 1 || defaults.read_timeout_ms < 1 ||
+        defaults.read_timeout_ms > 600000 || defaults.max_connections > 4096) {
+        tdx_error_set(err, "invalid server port, backlog, timeout or connection limit");
         return TDX_ERR;
     }
-
-    listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (listener == SERVE_INVALID) {
+    server = (tdx_server *)calloc(1, sizeof(*server));
+    if (!server) {
+        tdx_error_set(err, "out of memory for the server");
+        return TDX_ERR;
+    }
+    server->listener = SERVE_INVALID;
+    server->hub = hub;
+    server->options = defaults;
+    if (tdx_mutex_init(&server->lock, err) != TDX_OK ||
+        tdx_cond_init(&server->cond, err) != TDX_OK)
+        goto failed;
+    server->connections = (serve_connection *)calloc(defaults.max_connections,
+                                                     sizeof(*server->connections));
+    if (!server->connections) {
+        tdx_error_set(err, "out of memory for connection slots");
+        goto failed;
+    }
+#if defined(_WIN32)
+    {
+        WSADATA data;
+        if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+            tdx_error_set(err, "cannot initialize Winsock");
+            goto failed;
+        }
+        server->winsock_started = 1;
+    }
+#endif
+    server->listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (server->listener == SERVE_INVALID) {
         tdx_error_set(err, "cannot create the listening socket");
-        return TDX_ERR;
+        goto failed;
     }
-    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
+#if !defined(_WIN32)
+    if (server->listener >= FD_SETSIZE) {
+        tdx_error_set(err, "listening descriptor exceeds select capacity");
+        goto failed;
+    }
+#endif
+#if defined(_WIN32)
+    setsockopt(server->listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+#else
+    setsockopt(server->listener, SOL_SOCKET, SO_REUSEADDR,
+#endif
+               (const char *)&reuse, sizeof(reuse));
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons((uint16_t)options->port);
-    if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
-        listen(listener, options->backlog) != 0) {
-        close_socket(listener);
-        tdx_error_set(err, "cannot bind 127.0.0.1:%d", options->port);
-        return TDX_ERR;
+    address.sin_port = htons((uint16_t)defaults.port);
+    if (bind(server->listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(server->listener, defaults.backlog) != 0 ||
+        getsockname(server->listener, (struct sockaddr *)&address, &address_size) != 0 ||
+        set_blocking(server->listener, 0) != 0) {
+        tdx_error_set(err, "cannot bind 127.0.0.1:%d", defaults.port);
+        goto failed;
     }
+    server->port = (int)ntohs(address.sin_port);
+    *out = server;
+    return TDX_OK;
 
-    if (tdx_mutex_init(&g_connection_lock, err) != TDX_OK) {
-        close_socket(listener);
+failed:
+    tdx_server_destroy(server);
+    return TDX_ERR;
+}
+
+int tdx_server_start(tdx_server *server, tdx_error *err) {
+    if (!server) {
+        tdx_error_set(err, "server is null");
         return TDX_ERR;
     }
-    g_listener = listener;
-    signal(SIGINT, serve_on_signal);
-    signal(SIGTERM, serve_on_signal);
-    printf("press Ctrl+C to stop\n");
+    tdx_mutex_lock(&server->lock);
+    if (server->stopping || server->stopped) {
+        tdx_mutex_unlock(&server->lock);
+        tdx_error_set(err, "server is stopped");
+        return TDX_ERR;
+    }
+    if (!server->started) {
+        if (tdx_thread_start(&server->accept_thread, server_accept_main, server, err) != TDX_OK) {
+            tdx_mutex_unlock(&server->lock);
+            return TDX_ERR;
+        }
+        server->started = 1;
+    }
+    tdx_mutex_unlock(&server->lock);
+    return TDX_OK;
+}
+
+int tdx_server_port(const tdx_server *server) {
+    return server ? server->port : 0;
+}
+
+void tdx_server_stop(tdx_server *server) {
+    size_t index;
+    if (!server)
+        return;
+    tdx_mutex_lock(&server->lock);
+    while (server->joining)
+        tdx_cond_wait(&server->cond, &server->lock, -1);
+    if (server->stopped) {
+        tdx_mutex_unlock(&server->lock);
+        return;
+    }
+    server->joining = 1;
+    server->stopping = 1;
+    if (server->connections)
+        for (index = 0; index < server->options.max_connections; ++index)
+            if (server->connections[index].active)
+                shutdown_socket(server->connections[index].client);
+    tdx_mutex_unlock(&server->lock);
+    if (server->started)
+        tdx_thread_join(&server->accept_thread);
+    /* No more admissions or slot reuse after the accept thread joins. */
+    if (server->connections)
+        for (index = 0; index < server->options.max_connections; ++index)
+            if (server->connections[index].active)
+                tdx_thread_join(&server->connections[index].thread);
+    close_socket(server->listener);
+    server->listener = SERVE_INVALID;
+    tdx_mutex_lock(&server->lock);
+    server->started = 0;
+    server->stopped = 1;
+    server->joining = 0;
+    tdx_cond_broadcast(&server->cond);
+    tdx_mutex_unlock(&server->lock);
+}
+
+void tdx_server_destroy(tdx_server *server) {
+    if (!server)
+        return;
+    tdx_server_stop(server);
+    free(server->connections);
+    tdx_cond_destroy(&server->cond);
+    tdx_mutex_destroy(&server->lock);
+#if defined(_WIN32)
+    if (server->winsock_started)
+        WSACleanup();
+#endif
+    free(server);
+}
+
+int tdx_serve_run(tdx_hub *hub, const tdx_code *universe, size_t universe_size,
+                  const tdx_serve_options *options, tdx_error *err) {
+    tdx_server *server = NULL;
+    void (*old_int)(int);
+    void (*old_term)(int);
+    int failed;
+    (void)universe;
+    if (tdx_server_create(&server, hub, options, err) != TDX_OK)
+        return TDX_ERR;
+    if (tdx_server_start(server, err) != TDX_OK) {
+        tdx_server_destroy(server);
+        return TDX_ERR;
+    }
+    g_stop_requested = 0;
+    old_int = signal(SIGINT, serve_on_signal);
+    old_term = signal(SIGTERM, serve_on_signal);
     printf("tdx-l1stream listening on http://127.0.0.1:%d/ (universe %zu)\n",
-           options->port, universe_size);
-    printf("  GET /api/v1/market/stream            SSE for the whole universe\n");
-    printf("  GET /api/v1/market/stream?codes=...  SSE for selected securities\n");
-    printf("  GET /api/v1/market/snapshot?codes=...\n");
-    printf("  GET /status   GET /health\n");
+           tdx_server_port(server), universe_size);
+    printf("press Ctrl+C to stop\n");
     fflush(stdout);
-
-    for (;;) {
-        serve_socket client;
-        serve_connection *connection;
-        tdx_thread thread;
-        tdx_error thread_error;
-
-        if (g_stopping)
-            break;
-        client = accept(g_listener, NULL, NULL);
-        if (client == SERVE_INVALID)
-            break;
-        {
-            int timeout = options->write_timeout_ms;
-            setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout,
-                       sizeof(timeout));
-        }
-        connection = (serve_connection *)calloc(1, sizeof(*connection));
-        if (!connection) {
-            close_socket(client);
-            continue;
-        }
-        connection->client = client;
-        connection->hub = hub;
-        connection->universe = universe;
-        connection->universe_size = universe_size;
-        connection->write_timeout_ms = options->write_timeout_ms;
-
-        thread_error.message[0] = '\0';
-        if (tdx_thread_start(&thread, service_connection, connection,
-                             &thread_error) != TDX_OK) {
-            close_socket(client);
-            free(connection);
-            continue;
-        }
-        /* Detached: the handler owns the connection and frees it. */
-        tdx_thread_detach(&thread);
-    }
-    if (g_listener != SERVE_INVALID) {
-        close_socket(g_listener);
-        g_listener = SERVE_INVALID;
-    }
-    /* Stop the poller and wake every blocked subscriber, then let the
-     * in-flight handlers return before the caller frees the hub. */
+    while (!g_stop_requested && !server_stopping(server))
+        tdx_sleep_ms(50);
+    tdx_server_stop(server);
+    failed = server->failed;
+    tdx_server_destroy(server);
     tdx_hub_stop(hub);
-    {
-        int waited_ms = 0;
-        for (;;) {
-            size_t active;
-            tdx_mutex_lock(&g_connection_lock);
-            active = g_active_connections;
-            tdx_mutex_unlock(&g_connection_lock);
-            if (active == 0)
-                break;
-            if (waited_ms >= 5000) {
-                fprintf(stderr,
-                        "warning: %zu connection(s) still open, exiting anyway\n",
-                        active);
-                break;
-            }
-            tdx_sleep_ms(20);
-            waited_ms += 20;
-        }
+    if (old_int != SIG_ERR)
+        signal(SIGINT, old_int);
+    if (old_term != SIG_ERR)
+        signal(SIGTERM, old_term);
+    if (failed) {
+        tdx_error_set(err, "HTTP listener failed");
+        return TDX_ERR;
     }
-    tdx_mutex_destroy(&g_connection_lock);
-    printf("stopped\\n");
-    fflush(stdout);
     return TDX_OK;
 }

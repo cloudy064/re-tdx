@@ -72,6 +72,8 @@ typedef struct tdx_auction_series {
     uint32_t limit;
 } tdx_auction_series;
 
+/* Initialize fresh storage. Does not release an existing allocation: use free
+ * before reinitializing a populated series. free also resets all fields. */
 void tdx_auction_series_init(tdx_auction_series *series);
 void tdx_auction_series_free(tdx_auction_series *series);
 
@@ -119,6 +121,8 @@ int tdx_auction_time_label(int time_seconds, char *out, size_t out_size);
 int tdx_auction_build_request(int market_id, const char *code, uint32_t selector,
                               uint32_t start_raw, uint32_t limit, tdx_buf *out, tdx_error *err);
 
+/* out must be initialized and empty. The caller owns any allocated points,
+ * including partial results on failure, and must free them before parsing again. */
 int tdx_auction_parse(const uint8_t *payload, size_t size, uint32_t selector,
                       uint32_t start_raw, uint32_t limit, tdx_auction_series *out,
                       tdx_error *err);

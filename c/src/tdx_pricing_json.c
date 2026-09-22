@@ -299,7 +299,7 @@ int tdx_pricing_format(tdx_buf *out, const tdx_pricing_row *row, const char *res
             TDX_OK)
         return TDX_ERR;
     if (APPEND_LITERAL(out, err, ",\"maturity_yield_pct\":") != TDX_OK ||
-        append_number(out, row->has_maturity_yield_pct, row->maturity_yield_pct * 100.0, err) !=
+        append_number(out, row->has_maturity_yield_pct, row->maturity_yield_pct, err) !=
             TDX_OK)
         return TDX_ERR;
     if (APPEND_LITERAL(out, err, ",\"pure_bond_value\":") != TDX_OK ||

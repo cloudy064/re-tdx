@@ -1,6 +1,6 @@
 /* limits_fixtures.h - a live 0x0452 page, GENERATED. Do not hand edit.
  *
- * Produced by output/make_limits_fixtures.py from
+ * Produced by c/tools/generators/make_limits_fixtures.py from
  * output/limits_probe_evidence.txt, which output/dbg_limits_probe.c wrote from
  * the bytes a public node returned for a request from index 0.
  *

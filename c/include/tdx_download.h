@@ -71,7 +71,8 @@ int tdx_download_parse_chunk(const uint8_t *body, size_t size, uint32_t requeste
 int tdx_download_info(tdx_connection *connection, const char *remote_path,
                       tdx_file_info *out, tdx_error *err);
 
-/* Streams the whole resource into out, which is cleared first.  When
+/* Streams the whole resource into initialized out, reusing its allocation.
+ * Failure leaves out empty. When
  * verify_md5 is set and the server announced a digest, a mismatch fails the
  * transfer: a short or reordered chunk stream must never look complete. */
 int tdx_download_fetch(tdx_connection *connection, const char *remote_path,

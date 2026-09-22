@@ -17,6 +17,11 @@ extern "C" {
 int tdx_bonds_format(tdx_buf *out, const tdx_bond_row *row, const char *resource, size_t group,
                      size_t row_index, tdx_error *err);
 
+/* The same row with both coupon schedules included, still one complete object. */
+int tdx_bonds_format_with_schedule(tdx_buf *out, const tdx_bond_row *row,
+    const char *resource, const tdx_jsn_document *document, const tdx_jsn_group *group,
+    size_t group_index, size_t row_index, size_t schedule_capacity, tdx_error *err);
+
 /* Appends the coupon-schedule array of a row as a JSON array, given the two column
  * keys to pair.  Exposed separately because the reference defers this expansion:
  * the all-bond archive holds long historical sequences, and paying for them on

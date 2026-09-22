@@ -112,7 +112,7 @@ static void test_block_index_code(void) {
 /* --- requests --------------------------------------------------------- */
 
 static void test_request(void) {
-    tdx_buf request;
+    tdx_buf request = {0};
     tdx_error error;
     size_t index;
     int all_zero_tail = 1;
@@ -399,7 +399,7 @@ static int braces_balanced(const char *text) {
 static void test_json_rendering(void) {
     tdx_kline_series series;
     tdx_kline_page page;
-    tdx_buf line;
+    tdx_buf line = {0};
     tdx_error error;
     char text[4096];
     size_t copy;

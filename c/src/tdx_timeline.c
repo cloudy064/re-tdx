@@ -163,8 +163,8 @@ int tdx_timeline_parse(const uint8_t *payload, size_t size, tdx_timeline *out, t
 
 int tdx_timeline_fetch(tdx_connection *connection, int market_id, const char *code, int history,
                        const char *date, tdx_timeline *out, tdx_error *err) {
-    tdx_buf request;
-    tdx_buf response;
+    tdx_buf request = {0};
+    tdx_buf response = {0};
     int result = TDX_ERR;
 
     (void)date; /* only the historical command would use it, and that shape is open */

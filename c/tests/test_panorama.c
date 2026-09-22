@@ -120,7 +120,7 @@ static void test_projection(void) {
         "[\"600519\",\"1\",\"20260920\",\"90\",\"\"],"
         "[\"00000x\",\"0\",\"20260921\",\"50\",\"1.0\"],"
         "[\"300750\",\"0\",\"20260922\",\"60\",\"\"]]}]";
-    tdx_jsn_document doc;
+    tdx_jsn_document doc = {0};
     tdx_panorama_row rows[8];
     const tdx_panorama_view *view = tdx_panorama_find("quality-rating");
     size_t count = 0;
@@ -198,12 +198,12 @@ static void test_rendering(void) {
         "[{\"colheader\":[\"$ZQDM\",\"$SC\",\"date\",\"zxfs\",\"syl\"],\"data\":["
         "[\"002086\",\"0\",\"20260918\",\"75\",\"12.5\"],"
         "[\"600519\",\"1\",\"20260920\",\"90\",\"\"]]}]";
-    tdx_jsn_document doc;
+    tdx_jsn_document doc = {0};
     tdx_panorama_row rows[4];
     const tdx_panorama_view *view = tdx_panorama_find("quality-rating");
     size_t count = 0;
     size_t skipped = 0;
-    tdx_buf line;
+    tdx_buf line = {0};
     char reason[192];
 
     error.message[0] = '\0';

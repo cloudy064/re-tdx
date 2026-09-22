@@ -34,6 +34,21 @@ int tdx_convertible_format_summary(tdx_buf *out, size_t rows, size_t rows_comple
                                    size_t rows_exchangeable, size_t rows_with_underlying,
                                    const char *resource, const char *endpoint, tdx_error *err);
 
+typedef struct tdx_convertible_join_summary {
+    size_t documents;
+    const char *endpoint;
+    size_t union_keys;
+    size_t rows;
+    size_t rows_core_terms_complete;
+    size_t rows_from_overview;
+    size_t rows_only_elsewhere;
+    size_t rows_exchangeable_supplemented;
+    size_t rows_projection_verified;
+    size_t projection_fields_used;
+} tdx_convertible_join_summary;
+int tdx_convertible_format_join_summary(tdx_buf *out,
+    const tdx_convertible_join_summary *summary, tdx_error *err);
+
 #ifdef __cplusplus
 }
 #endif

@@ -39,6 +39,10 @@ python tdx_api.py catalog --search 基金
 
 ## 当前状态
 
+2026-09-22：纯 C L1 工程完成工程评审修复及三平台验证，见
+[归档记录](doc/99-log/2026-09-22-c-engineering-review.md)和[逐项修复清单](c/docs/engineering-review-fixes.md)。
+此轮仅更新 C 实现与相关构建、文档；下述逆向研究结论保留原有日期和范围。
+
 2026-08-05：Phase 1 侦察继续，Phase 2 已推进到应用消息与设备身份层。已完成
 `TdxW.exe`、两套 Asio、`TDataParse`、`TBigData`、`tpbus`、`TaApi`、
 `TEncrypt`、`libeay32`、`TJyaid`、`TPool` 和 `TCalc` 的 IDA 数据库分析，并定位

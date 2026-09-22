@@ -67,7 +67,7 @@ static void test_remote_path(void) {
 }
 
 static void test_gbk_conversion(void) {
-    tdx_buf utf8;
+    tdx_buf utf8 = {0};
     tdx_error error;
     error.message[0] = '\0';
     tdx_buf_init(&utf8);
@@ -83,20 +83,29 @@ static void test_gbk_conversion(void) {
     /* The JSON is ASCII except inside strings, so the converted text must still be
      * parseable JSON with the same structure. */
     {
-        const char *text = (const char *)utf8.data;
+        const char *text = text_of(&utf8);
         CHECK(strstr(text, "\"colheader\"") != NULL, "the converted text is still JSON");
     }
     CHECK(tdx_jsn_gbk_to_utf8(NULL, 0, &utf8, &error) == TDX_OK,
           "an empty payload converts to nothing");
     CHECK(tdx_jsn_gbk_to_utf8(jsn_gbk, sizeof(jsn_gbk), NULL, &error) == TDX_ERR,
           "a null output must be refused");
+    CHECK(tdx_jsn_gbk_to_utf8(NULL, 1, &utf8, &error) == TDX_ERR,
+          "a nonempty null input view must be refused");
+    {
+        const uint8_t truncated_gbk[] = {0x81};
+        size_t length = utf8.len;
+        CHECK(tdx_jsn_gbk_to_utf8(truncated_gbk, sizeof(truncated_gbk), &utf8, &error) == TDX_ERR,
+              "an incomplete GBK character must be refused");
+        CHECK(utf8.len == length, "failed conversion preserves previous output");
+    }
     tdx_buf_free(&utf8);
 }
 
 static void test_parse_captured(void) {
-    tdx_buf utf8;
-    tdx_buf cell;
-    tdx_jsn_document document;
+    tdx_buf utf8 = {0};
+    tdx_buf cell = {0};
+    tdx_jsn_document document = {0};
     tdx_error error;
     error.message[0] = '\0';
     tdx_buf_init(&utf8);
@@ -185,7 +194,7 @@ done:
 }
 
 static void test_shape_rejects(void) {
-    tdx_jsn_document document;
+    tdx_jsn_document document = {0};
     tdx_error error;
     error.message[0] = '\0';
 
@@ -255,11 +264,82 @@ static void test_shape_rejects(void) {
     }
 }
 
-int main(void) {
+static const char json_vectors[] =
+    "[{\"colheader\":[\"escaped\",\"utf8\",\"empty\"],\"data\":["
+    "[\"a\\\"b\\\\c\\n\\t\\u0000z\",\"\\u4e2d\",\"\"]]}]";
+
+static int render_json_vectors(tdx_buf *out) {
+    tdx_jsn_document document = {0};
+    tdx_error error = {0};
+    size_t column;
+    int result = TDX_ERR;
+    if (tdx_jsn_parse((const uint8_t *)json_vectors, sizeof(json_vectors) - 1,
+                      &document, &error) != TDX_OK)
+        goto done;
+    if (tdx_buf_push(out, '[', &error) != TDX_OK)
+        goto done;
+    for (column = 0; column < 3; ++column) {
+        if (column && tdx_buf_push(out, ',', &error) != TDX_OK)
+            goto done;
+        if (tdx_jsn_cell_json(&document, &document.groups[0], 0, column, out, &error) != TDX_OK)
+            goto done;
+    }
+    result = tdx_buf_push(out, ']', &error);
+done:
+    tdx_jsn_document_free(&document);
+    return result;
+}
+
+static void test_string_json_and_reuse(void) {
+    const char expected[] = "[\"a\\\"b\\\\c\\n\\t\\u0000z\",\"\xe4\xb8\xad\",\"\"]";
+    const char groups[] = "[{\"colheader\":[\"a\"],\"data\":[[\"1\"],[\"2\"]]},"
+                          "{\"colheader\":[\"b\"],\"data\":[[\"3\"]]}]";
+    tdx_buf out = {0};
+    tdx_jsn_document document = {0};
+    tdx_error error = {0};
+    tdx_jsn_group *allocation;
+    size_t *rows;
+    size_t index;
+    CHECK(render_json_vectors(&out) == TDX_OK, "render escaped cell vectors");
+    CHECK(out.len == sizeof(expected) - 1 && memcmp(out.data, expected, out.len) == 0,
+          "cell JSON escapes quotes, backslashes, controls and embedded NUL");
+    CHECK(tdx_jsn_parse((const uint8_t *)groups, sizeof(groups) - 1, &document, &error) == TDX_OK,
+          "parse multiple groups");
+    allocation = document.groups;
+    rows = document.row_nodes;
+    for (index = 0; index < 100; ++index) {
+        CHECK(tdx_jsn_parse((const uint8_t *)groups, sizeof(groups) - 1, &document, &error) == TDX_OK,
+              "reparse JSN");
+        CHECK(document.groups == allocation && document.row_nodes == rows, "reuse group and row indices");
+    }
+    CHECK(document.row_count == 3 && document.group_count == 2, "all rows indexed");
+    CHECK(strcmp(tdx_jsn_column_name(&document, &document.groups[1], 0), "b") == 0,
+          "second group's header uses its actual node index");
+    tdx_buf_clear(&out);
+    CHECK(tdx_jsn_cell_text(&document, &document.groups[1], 0, 0, &out, &error) == TDX_OK,
+          "access second group through direct row index");
+    CHECK(out.len == 1 && out.data[0] == '3', "correct second group cell");
+    CHECK(tdx_jsn_parse((const uint8_t *)"{}", 2, &document, &error) == TDX_ERR, "failed reparse");
+    CHECK(document.row_count == 0 && document.group_count == 0 && !document.json.valid,
+          "failed reparse leaves empty JSN");
+    tdx_jsn_document_free(&document);
+    tdx_buf_free(&out);
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--emit-json-vectors") == 0) {
+        tdx_buf out = {0};
+        int status = render_json_vectors(&out);
+        if (status == TDX_OK && fwrite(out.data, 1, out.len, stdout) != out.len)
+            status = TDX_ERR;
+        tdx_buf_free(&out);
+        return status == TDX_OK ? 0 : 1;
+    }
     test_remote_path();
     test_gbk_conversion();
     test_parse_captured();
     test_shape_rejects();
+    test_string_json_and_reuse();
 
     if (failures) {
         printf("%d jsn check(s) failed\n", failures);

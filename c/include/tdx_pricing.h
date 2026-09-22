@@ -173,7 +173,7 @@ typedef struct tdx_pricing_row {
     int has_conversion_premium_pct;
     double conversion_premium_pct;
     int has_maturity_yield_pct;
-    double maturity_yield_pct;
+    double maturity_yield_pct; /* percentage points, as with every _pct field */
     int has_pure_bond_value;
     double pure_bond_value;
     int has_pure_bond_premium_pct;

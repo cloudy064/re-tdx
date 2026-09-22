@@ -42,7 +42,7 @@ static void test_minute_mapping(void) {
 /* --- request ---------------------------------------------------------- */
 
 static void test_request(void) {
-    tdx_buf request;
+    tdx_buf request = {0};
     tdx_error error;
     size_t index;
     int zero_tail = 1;
@@ -223,7 +223,7 @@ static int braces_balanced(const char *text) {
 
 static void test_json_rendering(void) {
     tdx_timeline timeline;
-    tdx_buf line;
+    tdx_buf line = {0};
     tdx_error error;
     char text[4096];
     size_t copy;
@@ -274,7 +274,7 @@ static void test_json_rendering(void) {
     CHECK(strstr(text, "\"last_time\":\"15:00\"") != NULL, "the last label");
 
     /* An empty series must render nulls, not invented zeros. */
-    tdx_timeline_init(&timeline);
+    tdx_timeline_free(&timeline);
     tdx_buf_clear(&line);
     CHECK(tdx_timeline_format_summary(&line, &timeline, 0, "000623", NULL, &error) == TDX_OK,
           "empty summary render: %s", error.message);
@@ -296,12 +296,34 @@ static void test_json_rendering(void) {
     tdx_timeline_free(&timeline);
 }
 
+static void test_parse_lifetime(void) {
+    tdx_timeline timeline = {0};
+    tdx_error error = {0};
+    size_t iteration;
+    for (iteration = 0; iteration < 20; ++iteration) {
+        CHECK(tdx_timeline_parse(today_reply, sizeof(today_reply), &timeline, &error) == TDX_OK,
+              "repeat parse: %s", error.message);
+        CHECK(timeline.count == tdx_u16le(today_reply), "a fresh parse has exactly one reply");
+        tdx_timeline_free(&timeline);
+        CHECK(!timeline.points && timeline.count == 0 && timeline.capacity == 0,
+              "free releases and resets the successful result");
+        CHECK(tdx_timeline_parse(today_reply, sizeof(today_reply) - 3, &timeline, &error) == TDX_ERR,
+              "truncated repeat parse fails");
+        CHECK(timeline.count > 0, "failure occurs after allocation of earlier points");
+        tdx_timeline_free(&timeline);
+        CHECK(!timeline.points && timeline.count == 0 && timeline.capacity == 0,
+              "free releases and resets the partial result");
+    }
+    tdx_timeline_free(&timeline);
+}
+
 int main(void) {
     test_minute_mapping();
     test_request();
     test_parse_captured();
     test_parse_rejects();
     test_json_rendering();
+    test_parse_lifetime();
 
     if (failures) {
         printf("%d timeline check(s) failed\n", failures);

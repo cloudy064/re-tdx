@@ -332,9 +332,12 @@ int tdx_pricing_normalize(const tdx_jsn_document *doc, const tdx_jsn_group *grou
                     item->remaining_payment_rates.length, as_of_date, as_of_length, flows,
                     TDX_BOND_FLOWS_MAX);
             item->cash_flow_count = flow_count;
-            if (item->has_full_price && flow_count > 0)
+            if (item->has_full_price && flow_count > 0) {
                 item->has_maturity_yield_pct = tdx_bond_solve_ytm(
                     flows, flow_count, item->full_price, &item->maturity_yield_pct);
+                if (item->has_maturity_yield_pct)
+                    item->maturity_yield_pct *= 100.0;
+            }
             if (item->has_curve_yield && flow_count > 0)
                 item->has_pure_bond_value = tdx_bond_discounted_value(
                     flows, flow_count, item->curve_yield, &item->pure_bond_value);

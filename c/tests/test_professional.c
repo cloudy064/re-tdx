@@ -18,6 +18,7 @@
  * by 13 exactly.  A file that does NOT divide is an error, not a partial trailing record
  * to ignore. */
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 #include "tdx_professional.h"
@@ -337,7 +338,7 @@ static void test_selection(void) {
 static void test_rendering(void) {
     tdx_professional_record records[PROFESSIONAL_STOCK_PREFIX_RECORDS + 4];
     size_t count = 0;
-    tdx_buf line;
+    tdx_buf line = {0};
     const char *text;
     int depth = 0;
     int in_string = 0;
@@ -412,7 +413,7 @@ static void test_rendering(void) {
         memset(&infinite, 0, sizeof(infinite));
         infinite.id = 1;
         infinite.date = 20240101;
-        infinite.first = 1.0f / 0.0f;
+        infinite.first = INFINITY;
         tdx_buf_clear(&line);
         CHECK(tdx_professional_format_record(&line, &infinite, NULL, 0, &error) == TDX_OK,
               "a non-finite value renders: %s", error.message);

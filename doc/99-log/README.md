@@ -12,6 +12,7 @@
 
 ## 归档列表
 
+- [纯 C 工程评审修复、跨平台验证与一致性归档](2026-09-22-c-engineering-review.md)
 - [TCalc Level2 type-31 订单流与公式上下文](2026-08-12-native-tcalc-level2-order-flow.md)
 - [TDXDeep 本地形态匹配模板与评分](2026-08-12-native-tdxdeep-shape-match.md)
 - [本地投资组合、明细完整性与交易费率](2026-08-12-native-investment-portfolio.md)

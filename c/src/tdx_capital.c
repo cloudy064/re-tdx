@@ -217,8 +217,8 @@ int tdx_capital_parse(const uint8_t *payload, size_t size, const tdx_code *expec
 int tdx_capital_fetch(tdx_connection *connection, const tdx_code *security,
                       tdx_capital_record *out, size_t capacity, size_t *out_count,
                       size_t *block_count, tdx_error *err) {
-    tdx_buf request;
-    tdx_buf response;
+    tdx_buf request = {0};
+    tdx_buf response = {0};
     int result = TDX_ERR;
 
     if (!connection || !out) {

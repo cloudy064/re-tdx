@@ -1,7 +1,7 @@
 /* pending_fixtures.h - a captured pending convertible-bond list, GENERATED.
  * Do not hand edit.
  *
- * Produced by output/make_pending_fixtures.py from output/pending_primary.gbk,
+ * Produced by c/tools/generators/make_pending_fixtures.py from output/pending_primary.gbk,
  * which output/dbg_jsn_probe.c wrote from the bytes a public node returned for
  * bi/list/dfkzz201_1.jsn (md5 c2df9c63712e1e6331d8f3b0ed647440, 153 rows).
  *

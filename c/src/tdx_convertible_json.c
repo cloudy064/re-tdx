@@ -4,6 +4,7 @@
 #include "tdx_bonds_json.h"
 
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 #include "tdx_format.h"
@@ -13,24 +14,35 @@
  * computed expression decays to a pointer, so `cond ? "true" : "false"` would
  * copy sizeof(char*) - 1 bytes.  Pass an expression to tdx_buf_append_printf. */
 
-static int append_text(tdx_buf *out, const tdx_bond_text *text, tdx_error *err) {
-    char scratch[1024];
-
-    if (!text->present || !text->data)
-        return APPEND_LITERAL(out, err, "null");
-    if (text->length >= sizeof(scratch)) {
-        tdx_error_set(err, "a convertible-bond text field is %zu bytes, longer than this "
-                           "renderer holds",
-                      text->length);
+int tdx_convertible_format_join_summary(tdx_buf *out,
+    const tdx_convertible_join_summary *summary, tdx_error *err) {
+    if (!out || !summary) {
+        tdx_error_set(err, "rendering a convertible summary needs a buffer and counters");
         return TDX_ERR;
     }
-    memcpy(scratch, text->data, text->length);
-    scratch[text->length] = '\0';
-    return tdx_format_json_string(out, scratch, err);
+    if (tdx_buf_append_printf(out, err,
+          "{\"type\":\"convertible_join_summary\",\"documents\":%zu,\"endpoint\":",
+          summary->documents) != TDX_OK ||
+        tdx_format_json_string(out, summary->endpoint ? summary->endpoint : "", err) != TDX_OK)
+        return TDX_ERR;
+    return tdx_buf_append_printf(out, err,
+        ",\"union_keys\":%zu,\"rows\":%zu,\"rows_core_terms_complete\":%zu,"
+        "\"rows_from_overview\":%zu,\"rows_only_elsewhere\":%zu,"
+        "\"rows_exchangeable_supplemented\":%zu,\"rows_projection_verified\":%zu,"
+        "\"projection_fields_used\":%zu}", summary->union_keys, summary->rows,
+        summary->rows_core_terms_complete, summary->rows_from_overview,
+        summary->rows_only_elsewhere, summary->rows_exchangeable_supplemented,
+        summary->rows_projection_verified, summary->projection_fields_used);
+}
+
+static int append_text(tdx_buf *out, const tdx_bond_text *text, tdx_error *err) {
+    if (!text->present || !text->data)
+        return APPEND_LITERAL(out, err, "null");
+    return tdx_format_json_string_n(out, text->data, text->length, err);
 }
 
 static int append_number(tdx_buf *out, int has, double value, tdx_error *err) {
-    if (!has)
+    if (!has || !isfinite(value))
         return APPEND_LITERAL(out, err, "null");
     return tdx_buf_append_printf(out, err, "%.6f", value);
 }
@@ -324,7 +336,7 @@ int tdx_convertible_format_joined(tdx_buf *out, const tdx_convertible_row *row,
                                   const tdx_convertible_extra *extra,
                                   const tdx_convertible_join_flags *flags,
                                   const char *overview_resource, tdx_error *err) {
-    tdx_buf overview;
+    tdx_buf overview = {0};
     size_t inner;
     size_t index;
     int result;

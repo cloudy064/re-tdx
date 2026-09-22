@@ -23,6 +23,8 @@
  * reproduced from the reference and is NOT changed here; instead such a price is
  * FLAGGED, so the numbers stay visible and the reader is told not to trust them. */
 #include <stdio.h>
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tdx_pricing.h"
@@ -55,9 +57,6 @@ static const char *text_of(const tdx_buf *buffer) {
     return scratch;
 }
 
-static tdx_bond_text view(const tdx_jsn_document *doc, size_t row, const char *key) {
-    return tdx_bonds_cell_text(doc, &doc->groups[0], row, key);
-}
 
 static tdx_snapshot make_quote(int market, const char *code, double last, double previous,
                               double amount) {
@@ -178,6 +177,21 @@ static void test_terms_and_live_valuation(void) {
     CHECK(rows[0].maturity_yield_pct < 0.0,
           "112.45 for 106.50 in 23 days is a negative yield, got %.6f",
           rows[0].maturity_yield_pct);
+    {
+        double expected_pct = (pow(106.5 / rows[0].full_price, 365.0 / 23.0) - 1.0) * 100.0;
+        tdx_buf rendered;
+        const char *field;
+        tdx_buf_init(&rendered);
+        CHECK(fabs(rows[0].maturity_yield_pct - expected_pct) < 1e-8,
+              "the C model stores percentage points: %.10f vs %.10f",
+              rows[0].maturity_yield_pct, expected_pct);
+        CHECK(tdx_pricing_format(&rendered, &rows[0], TDX_PRICING_RESOURCE, 0, &error) == TDX_OK,
+              "yield renders: %s", error.message);
+        field = strstr(text_of(&rendered), "\"maturity_yield_pct\":");
+        CHECK(field && fabs(strtod(field + strlen("\"maturity_yield_pct\":"), NULL) - expected_pct) < 1e-5,
+              "JSON preserves the same percentage value");
+        tdx_buf_free(&rendered);
+    }
     CHECK(rows[0].has_pure_bond_value && rows[0].pure_bond_value > 106.4009 &&
               rows[0].pure_bond_value < 106.4010,
           "the pure bond value is 106.400995, got %.6f", rows[0].pure_bond_value);

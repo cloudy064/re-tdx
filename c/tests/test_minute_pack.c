@@ -34,14 +34,6 @@ static int failures = 0;
 
 static tdx_error error;
 
-static const char *text_of(const tdx_buf *buffer) {
-    static char scratch[8192];
-    size_t copy = buffer->len < sizeof(scratch) - 1 ? buffer->len : sizeof(scratch) - 1;
-    if (copy && buffer->data)
-        memcpy(scratch, buffer->data, copy);
-    scratch[copy] = '\0';
-    return scratch;
-}
 
 /* The date word is what the terminal itself writes, so encoding and decoding must be exact
  * inverses over the range the format covers. */

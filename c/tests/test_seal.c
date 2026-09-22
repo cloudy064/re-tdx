@@ -293,7 +293,7 @@ static void test_rendering(void) {
     tdx_seal_result seal;
     tdx_limit_prices limits = limits_of(12.11, 9.91);
     tdx_code code = equity();
-    tdx_buf line;
+    tdx_buf line = {0};
     char reason[192];
 
     memset(&input, 0, sizeof(input));

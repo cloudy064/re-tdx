@@ -1,53 +1,14 @@
 /* tdx_bond_math.c - the valuation arithmetic the pricing view needs. */
 #include "tdx_bond_math.h"
+#include "tdx_date.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 int tdx_bond_civil_days(const char *text, size_t length, long long *out) {
-    char scratch[16];
-    size_t index;
-    size_t written = 0;
-    int year;
-    unsigned month;
-    unsigned day;
-    int y;
-    int era;
-    unsigned yoe;
-    unsigned mp;
-    unsigned doy;
-    unsigned doe;
-
-    if (!text || !out)
-        return 0;
-    /* Hyphens are dropped, so YYYYMMDD and YYYY-MM-DD both work, which the reference
-     * allows because the table and a caller's date are spelled differently. */
-    for (index = 0; index < length && written < sizeof(scratch) - 1; ++index)
-        if (text[index] != '-' && text[index] != ' ')
-            scratch[written++] = text[index];
-    scratch[written] = '\0';
-    if (written != 8)
-        return 0;
-    for (index = 0; index < 8; ++index)
-        if (scratch[index] < '0' || scratch[index] > '9')
-            return 0;
-    year = (scratch[0] - '0') * 1000 + (scratch[1] - '0') * 100 + (scratch[2] - '0') * 10 +
-           (scratch[3] - '0');
-    month = (unsigned)((scratch[4] - '0') * 10 + (scratch[5] - '0'));
-    day = (unsigned)((scratch[6] - '0') * 10 + (scratch[7] - '0'));
-    if (month < 1 || month > 12 || day < 1 || day > 31)
-        return 0;
-    /* Days from 1970-01-01, by the same civil-from-days algorithm the reference uses,
-     * so the two agree on every date rather than only on recent ones. */
-    y = year - (month <= 2 ? 1 : 0);
-    era = (y >= 0 ? y : y - 399) / 400;
-    yoe = (unsigned)(y - era * 400);
-    mp = month > 2 ? month - 3 : month + 9;
-    doy = (153 * mp + 2) / 5 + day - 1;
-    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    *out = (long long)era * 146097 + (long long)doe - 719468;
-    return 1;
+    uint32_t date;
+    return tdx_date_parse(text, length, 1, &date) && tdx_date_days(date, out);
 }
 
 size_t tdx_bond_csv_pieces(const char *text, size_t length, tdx_bond_piece *out,

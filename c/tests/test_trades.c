@@ -50,8 +50,6 @@ static const uint8_t today_reply[] = {
 static void test_helpers(void) {
     char text[24];
     char label[8];
-    tdx_error error;
-    error.message[0] = '\0';
 
     CHECK(strcmp((tdx_trades_side_text(0, text, sizeof(text)), text), "buy") == 0, "0 is buy");
     CHECK(strcmp((tdx_trades_side_text(1, text, sizeof(text)), text), "sell") == 0, "1 is sell");

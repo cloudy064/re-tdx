@@ -11,9 +11,8 @@
  * column.
  *
  * Text is GBK on the wire and UTF-8 here.  The conversion uses the Windows code
- * page rather than an embedded table: 936 is the system's own GBK, so the mapping
- * is exact and costs no table.  On a platform without it the conversion reports
- * that plainly instead of guessing.
+ * page (936) on Windows and iconv's GBK conversion on POSIX, without embedding
+ * a second character mapping table.
  *
  * The parser does not interpret the columns.  What each column means is domain
  * knowledge that belongs to the caller; this layer only guarantees that a cell is
@@ -37,6 +36,7 @@ extern "C" {
 
 typedef struct tdx_jsn_group {
     size_t json_index; /* the group's node in the JSON document */
+    size_t headers_index;
     size_t first_row;  /* first row of this group in the flattened numbering */
     size_t row_count;
     size_t column_count;
@@ -48,13 +48,19 @@ typedef struct tdx_jsn_document {
     size_t group_count;
     size_t group_capacity;
     size_t row_count; /* across all groups */
+    size_t *row_nodes; /* direct node index for each flattened row */
+    size_t row_capacity;
 } tdx_jsn_document;
 
 void tdx_jsn_document_init(tdx_jsn_document *doc);
+/* Initialize (or use {0}) before parsing; clear reuses storage, free releases it.
+ * Both invalidate borrowed groups, nodes and cell views. */
+void tdx_jsn_document_clear(tdx_jsn_document *doc);
 void tdx_jsn_document_free(tdx_jsn_document *doc);
 
 /* Parses already-decoded UTF-8 JSON.  Use tdx_jsn_gbk_to_utf8 first when the bytes
- * came straight off the wire. */
+ * came straight off the wire. doc must be initialized; reparsing reuses its
+ * storage, and failure leaves an empty document. Input must not alias doc. */
 int tdx_jsn_parse(const uint8_t *data, size_t size, tdx_jsn_document *doc, tdx_error *err);
 
 size_t tdx_jsn_group_count(const tdx_jsn_document *doc);

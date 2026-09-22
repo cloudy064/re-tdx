@@ -14,6 +14,8 @@
  *     value.  An earlier version stored them in one field, so one overwrote the
  *     other. */
 #include <stdio.h>
+#include <limits.h>
+#include <locale.h>
 #include <string.h>
 
 #include "tdx_json.h"
@@ -223,6 +225,55 @@ static void test_integer(void) {
     tdx_json_doc_free(&doc);
 }
 
+static void test_number_bounds_and_grammar(void) {
+    static const char *invalid[] = {"+1", "1.", "1.e2", ".1", "1e", "1e+", "--1",
+                                    "-01", "0x1", "1e9999", "1e-9999"};
+    const uint8_t view[] = {'1', '2', 0};
+    const uint8_t exact[] = {'-', '1', '.', '2', 'e', '+', '2'};
+    const uint8_t invalid_utf8[] = {'"', 0xC0, 0x80, '"'};
+    size_t index;
+    CHECK(tdx_json_parse(view, 1, &doc, &error) == TDX_OK,
+          "a numeric view stops at its explicit size");
+    CHECK(tdx_json_root(&doc) && tdx_json_root(&doc)->number == 1, "the view is 1, not 12");
+    CHECK(tdx_json_parse(exact, sizeof(exact), &doc, &error) == TDX_OK,
+          "a numeric token needs no input terminator");
+    CHECK(tdx_json_root(&doc) && tdx_json_root(&doc)->number == -120, "complete numeric grammar");
+    for (index = 0; index < sizeof(invalid) / sizeof(invalid[0]); ++index)
+        CHECK(tdx_json_parse((const uint8_t *)invalid[index], strlen(invalid[index]), &doc,
+                             &error) == TDX_ERR, "invalid number is refused: %s", invalid[index]);
+    CHECK(tdx_json_parse(invalid_utf8, sizeof(invalid_utf8), &doc, &error) == TDX_ERR,
+          "overlong UTF-8 is refused");
+    CHECK(tdx_json_parse(view, (size_t)TDX_JSON_INPUT_MAX + 1, &doc, &error) == TDX_ERR,
+          "oversized input is refused without reading its bytes");
+    CHECK(PARSE("[1.5,1e30,\"999999999999999999999999999999\",\"12\\u0000junk\"]") == TDX_OK,
+          "integer conversion fixtures parse");
+    for (index = 0; index < 4; ++index) {
+        long value = 123;
+        CHECK(tdx_json_integer(&doc, tdx_json_at(&doc, tdx_json_root(&doc), index), &value) == TDX_ERR,
+              "integer conversion refuses fractional, overflow and embedded NUL values");
+        CHECK(value == 123, "failed conversion preserves the output");
+    }
+    tdx_json_doc_free(&doc);
+}
+
+static void test_reparse_lifetime(void) {
+    tdx_json_node *nodes;
+    char *text;
+    size_t index;
+    CHECK(PARSE("{\"x\":\"value\"}") == TDX_OK, "first reusable parse");
+    nodes = doc.nodes;
+    text = doc.text;
+    for (index = 0; index < 100; ++index) {
+        CHECK(PARSE("{\"x\":\"value\"}") == TDX_OK, "repeat parse");
+        CHECK(doc.nodes == nodes && doc.text == text, "reparse retains arena ownership");
+    }
+    CHECK(PARSE("[") == TDX_ERR, "failed reparse");
+    CHECK(!doc.valid && doc.node_count == 0 && doc.text_used == 0, "failure leaves empty document");
+    CHECK(doc.nodes == nodes && doc.text == text, "failure retains reusable allocations");
+    CHECK(PARSE("null") == TDX_OK, "parse after failure");
+    tdx_json_doc_free(&doc);
+}
+
 int main(void) {
     tdx_json_doc_init(&doc);
     test_scalars();
@@ -230,6 +281,8 @@ int main(void) {
     test_containers();
     test_rejects();
     test_integer();
+    test_number_bounds_and_grammar();
+    test_reparse_lifetime();
 
     if (failures) {
         printf("%d json check(s) failed\n", failures);

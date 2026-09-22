@@ -136,7 +136,7 @@ static void put_record(body *out, int market, const char *code, int64_t close_ra
 }
 
 static void test_request(void) {
-    tdx_buf request;
+    tdx_buf request = {0};
     uint16_t value = 0;
 
     tdx_buf_init(&request);
@@ -343,7 +343,7 @@ static void test_rendering(void) {
     body out = {{0}, 0};
     tdx_ranking_record records[4];
     tdx_ranking_page page;
-    tdx_buf line;
+    tdx_buf line = {0};
     char reason[192];
 
     put_u16(&out, 1);

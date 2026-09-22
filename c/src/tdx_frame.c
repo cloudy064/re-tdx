@@ -16,11 +16,12 @@ int tdx_frame_build_request(uint32_t message_id, uint16_t message_type,
         tdx_error_set(err, "request buffer is null");
         return TDX_ERR;
     }
+    tdx_buf_clear(out);
     if (prefix != TDX_REQUEST_PREFIX && prefix != TDX_EXPANSION_REQUEST_PREFIX) {
         tdx_error_set(err, "market-data request prefix must be 0x0C or 0x01");
         return TDX_ERR;
     }
-    if (body_size + 2 > TDX_MAX_BODY_BYTES + 2) {
+    if (body_size > TDX_MAX_BODY_BYTES) {
         tdx_error_set(err, "7709 request payload is too large (%zu bytes)", body_size);
         return TDX_ERR;
     }
@@ -30,7 +31,6 @@ int tdx_frame_build_request(uint32_t message_id, uint16_t message_type,
     }
     length = (uint16_t)(body_size + 2);
 
-    tdx_buf_init(out);
     if (tdx_buf_reserve(out, 12 + body_size, err) != TDX_OK)
         return TDX_ERR;
     if (tdx_buf_push(out, prefix, err) != TDX_OK)
@@ -50,7 +50,7 @@ int tdx_frame_build_request(uint32_t message_id, uint16_t message_type,
     return TDX_OK;
 
 fail:
-    tdx_buf_free(out);
+    tdx_buf_clear(out);
     return TDX_ERR;
 }
 
@@ -78,42 +78,43 @@ int tdx_frame_decode_body(const uint8_t *wire, size_t wire_size,
         tdx_error_set(err, "response buffer is null");
         return TDX_ERR;
     }
+    tdx_buf_clear(out);
+    if (wire_size > UINT16_MAX || decoded_size > UINT16_MAX) {
+        tdx_error_set(err, "7709 response sizes exceed the 16-bit frame limit");
+        return TDX_ERR;
+    }
     if (wire_size > 0 && !wire) {
         tdx_error_set(err, "response body is null but %zu bytes were announced",
                       wire_size);
         return TDX_ERR;
     }
-    tdx_buf_init(out);
 
     if (wire_size == decoded_size) {
         if (tdx_buf_append(out, wire, wire_size, err) != TDX_OK) {
-            tdx_buf_free(out);
+            tdx_buf_clear(out);
             return TDX_ERR;
         }
         return TDX_OK;
     }
 
     if (tdx_buf_reserve(out, decoded_size, err) != TDX_OK) {
-        tdx_buf_free(out);
+        tdx_buf_clear(out);
         return TDX_ERR;
     }
     {
         uLongf produced = (uLongf)decoded_size;
         int status;
-        if (decoded_size > 0) {
-            memset(out->data, 0, decoded_size);
-            status = uncompress(out->data, &produced, wire, (uLong)wire_size);
-        } else {
-            status = Z_OK;
-            produced = 0;
-        }
+        uint8_t empty;
+        uLong consumed = (uLong)wire_size;
+        status = uncompress2(decoded_size ? out->data : &empty, &produced,
+                             wire, &consumed);
         if (status != Z_OK) {
-            tdx_buf_free(out);
+            tdx_buf_clear(out);
             tdx_error_set(err, "7709 zlib decompression failed: %d", status);
             return TDX_ERR;
         }
-        if (produced != (uLongf)decoded_size) {
-            tdx_buf_free(out);
+        if (produced != (uLongf)decoded_size || consumed != (uLong)wire_size) {
+            tdx_buf_clear(out);
             tdx_error_set(err, "7709 decoded response length mismatch (%lu of %zu)",
                           (unsigned long)produced, decoded_size);
             return TDX_ERR;

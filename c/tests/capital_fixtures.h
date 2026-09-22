@@ -1,6 +1,6 @@
 /* capital_fixtures.h - a live 0x000F reply, GENERATED. Do not hand edit.
  *
- * Produced by output/make_capital_fixtures.py from
+ * Produced by c/tools/generators/make_capital_fixtures.py from
  * output/capital_probe_evidence.txt, which output/dbg_capital_probe.c wrote
  * from the bytes a public node returned for sz000001.  The reply is Ping An
  * Bank's whole share-capital history, and it is the fixture that carries the

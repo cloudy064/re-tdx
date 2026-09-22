@@ -1,6 +1,6 @@
 /* finance_fixtures.h - a live 0x0010 reply, GENERATED. Do not hand edit.
  *
- * Produced by output/make_finance_fixtures.py from
+ * Produced by c/tools/generators/make_finance_fixtures.py from
  * output/finance_probe_evidence.txt, which output/dbg_finance_probe.c wrote
  * from the bytes a public node returned for sh600000, sz000001, sh601398,
  * sz000002, sh600519 and sz300750.  Regenerate the pair together; editing

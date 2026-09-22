@@ -230,6 +230,10 @@ int tdx_download_fetch(tdx_connection *connection, const char *remote_path,
     tdx_buf_init(&request);
     tdx_buf_init(&response);
     tdx_buf_clear(out);
+    if (info->size == 0 || info->size > TDX_DOWNLOAD_RESOURCE_MAX) {
+        tdx_error_set(err, "resource size is outside the supported transfer limit");
+        goto done;
+    }
     if (tdx_buf_reserve(out, info->size ? info->size : 1u, err) != TDX_OK)
         goto done;
 
@@ -277,6 +281,8 @@ int tdx_download_fetch(tdx_connection *connection, const char *remote_path,
 done:
     tdx_buf_free(&request);
     tdx_buf_free(&response);
+    if (result != TDX_OK)
+        tdx_buf_clear(out);
     return result;
 }
 

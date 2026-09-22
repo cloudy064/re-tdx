@@ -21,6 +21,11 @@ typedef struct tdx_buf {
     size_t cap;
 } tdx_buf;
 
+/* All functions accepting a buffer require tdx_buf_init() or a {0}
+ * initializer first.  clear() reuses storage; free() releases it and leaves
+ * an empty reusable buffer.  len counts bytes, excluding any text terminator.
+ * Unless documented otherwise, input views must not alias the output buffer. */
+
 /* Zeroes the struct.  Safe to call on an already initialised buffer only
  * after tdx_buf_free; it does not release memory. */
 void tdx_buf_init(tdx_buf *buf);

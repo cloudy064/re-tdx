@@ -5,6 +5,7 @@
  * second half replays a real zst_cache sample when one is available and asserts
  * the invariants and the final state measured in output/zst_field_table.py. */
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -689,8 +690,22 @@ static void test_real_sample(const char *directory) {
     snprintf(path, sizeof(path), "%s/sz000623_20260612.img", directory);
     error.message[0] = '\0';
     tdx_zst_document_init(&document);
+    {
+        FILE *sample = fopen(path, "rb");
+        if (!sample) {
+            if (errno == ENOENT)
+                printf("skip: real sample %s is absent\n", path);
+            else
+                CHECK(0, "cannot open real sample %s: %s", path, strerror(errno));
+            return;
+        }
+        if (fclose(sample) != 0) {
+            CHECK(0, "cannot close real sample %s", path);
+            return;
+        }
+    }
     if (tdx_zst_decode_file(path, &document, &error) != TDX_OK) {
-        printf("skip: real sample %s is not readable (%s)\n", path, error.message);
+        CHECK(0, "real sample %s failed to decode: %s", path, error.message);
         tdx_zst_document_free(&document);
         return;
     }

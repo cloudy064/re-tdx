@@ -73,7 +73,7 @@ static const char *label_text(const tdx_bond_text *text) {
 }
 
 static void test_master(void) {
-    tdx_jsn_document doc;
+    tdx_jsn_document doc = {0};
     tdx_valuation_index indices[VALUATION_MASTER_ROWS + 4];
     size_t count = 0;
     size_t skipped = 0;
@@ -137,8 +137,8 @@ static void test_master(void) {
 }
 
 static void test_history_merge(void) {
-    tdx_jsn_document pe;
-    tdx_jsn_document pb;
+    tdx_jsn_document pe = {0};
+    tdx_jsn_document pb = {0};
     tdx_valuation_point points[VALUATION_HISTORY_PREFIX_ROWS + 4];
     tdx_valuation_merge merge;
 
@@ -194,8 +194,8 @@ static void test_merge_edges(void) {
     static const char *pb_json =
         "[{\"colheader\":[\"date\",\"pbbfw\",\"pb\"],\"data\":["
         "[\"20240105\",\"20.0\",\"1.5\"],[\"20240103\",\"21.0\",\"1.6\"]]}]";
-    tdx_jsn_document pe;
-    tdx_jsn_document pb;
+    tdx_jsn_document pe = {0};
+    tdx_jsn_document pb = {0};
     tdx_valuation_point points[16];
     tdx_valuation_merge merge;
     size_t index;
@@ -243,7 +243,7 @@ static void test_merge_edges(void) {
 }
 
 static void test_funds(void) {
-    tdx_jsn_document doc;
+    tdx_jsn_document doc = {0};
     tdx_valuation_fund funds[VALUATION_FUNDS_ROWS + 4];
     size_t count = 0;
     size_t skipped = 0;
@@ -271,13 +271,13 @@ static void test_funds(void) {
 }
 
 static void test_rendering(void) {
-    tdx_jsn_document doc;
+    tdx_jsn_document doc = {0};
     tdx_valuation_index indices[VALUATION_MASTER_ROWS + 4];
     tdx_valuation_point points[4];
     tdx_valuation_merge merge;
     size_t count = 0;
     size_t skipped = 0;
-    tdx_buf line;
+    tdx_buf line = {0};
     char reason[192];
 
     if (parse(valuation_master, &doc) != TDX_OK)
@@ -325,7 +325,7 @@ static void test_rendering(void) {
     /* THE FUND RENDERER TOO: it was the one this test did not cover, and that is exactly
      * where the same missing brace survived. */
     {
-        tdx_jsn_document funds_doc;
+        tdx_jsn_document funds_doc = {0};
         tdx_valuation_fund funds[VALUATION_FUNDS_ROWS + 4];
         size_t fund_count = 0;
         size_t fund_skipped = 0;

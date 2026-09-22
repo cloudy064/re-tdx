@@ -420,8 +420,8 @@ int tdx_kline_fetch(tdx_connection *connection, int market_id, const char *code,
 
     for (page_index = 0; page_index < max_pages; ++page_index) {
         tdx_kline_page page;
-        tdx_buf request;
-        tdx_buf response;
+        tdx_buf request = {0};
+        tdx_buf response = {0};
         uint16_t current_start = (uint16_t)(start + (int)page_index * (int)page_size);
         int parsed;
 

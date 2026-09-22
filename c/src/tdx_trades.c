@@ -1,5 +1,6 @@
 /* tdx_trades.c - 0x0FC5/0x0FC6 L1 trade details, ported from the C++ tool. */
 #include "tdx_trades.h"
+#include "tdx_date.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -43,40 +44,11 @@ int tdx_trades_price_divisor(const char *code) {
     return 100;
 }
 
-static int leap_year(int year) {
-    return year % 400 == 0 || (year % 4 == 0 && year % 100 != 0);
-}
-
 int tdx_trades_date_valid(const char *date, tdx_error *err) {
-    static const int month_days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    int year;
-    int month;
-    int day;
-    int maximum;
-    size_t index;
-
-    if (!date || strlen(date) != TDX_TRADES_DATE_LENGTH) {
-        tdx_error_set(err, "trading date must be eight digits, YYYYMMDD");
-        return TDX_ERR;
-    }
-    for (index = 0; index < TDX_TRADES_DATE_LENGTH; ++index)
-        if (date[index] < '0' || date[index] > '9') {
-            tdx_error_set(err, "trading date must be eight digits, YYYYMMDD");
-            return TDX_ERR;
-        }
-    year = (date[0] - '0') * 1000 + (date[1] - '0') * 100 + (date[2] - '0') * 10 +
-           (date[3] - '0');
-    month = (date[4] - '0') * 10 + (date[5] - '0');
-    day = (date[6] - '0') * 10 + (date[7] - '0');
-    if (year < 1990 || year > 2200 || month < 1 || month > 12) {
-        tdx_error_set(err, "trading date %s is not a usable date", date);
-        return TDX_ERR;
-    }
-    maximum = month_days[month - 1];
-    if (month == 2 && leap_year(year))
-        ++maximum;
-    if (day < 1 || day > maximum) {
-        tdx_error_set(err, "trading date %s is not a usable date", date);
+    uint32_t value;
+    if (!date || !tdx_date_parse(date, strlen(date), 0, &value) ||
+        value / 10000 < 1990 || value / 10000 > 2200) {
+        tdx_error_set(err, "trading date must be a real date in 1990..2200, YYYYMMDD");
         return TDX_ERR;
     }
     return TDX_OK;
