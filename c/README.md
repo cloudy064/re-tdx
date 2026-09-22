@@ -84,6 +84,8 @@ c/
     tdx_ranking_json.h     排名行与汇总的 JSONL 渲染
     tdx_seal.h             封单量/封单比（三条路径，金额带符号）
     tdx_seal_json.h        封单结果与其输入的 JSONL 渲染
+    tdx_panorama.h         市场全景：视图注册表与类型化投影
+    tdx_panorama_json.h    视图/投影行/汇总的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -107,6 +109,7 @@ c/
     tdx_minute.c  tdx_minute_json.c  tdx_industry.c  tdx_industry_json.c
     tdx_limit.c  tdx_valuation.c  tdx_valuation_json.c
     tdx_ranking.c  tdx_ranking_json.c  tdx_seal.c  tdx_seal_json.c
+    tdx_panorama.c  tdx_panorama_json.c  tdx_panorama_views.c (GENERATED)
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -139,6 +142,7 @@ c/
     test_valuation.c  valuation_fixtures.h (generated, master whole)
     test_ranking.c (a response built by the test, its varints computed)
     test_seal.c (the three seal paths, built from inputs)
+    test_panorama.c (the registry whole, and synthetic projections)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
 ```
@@ -159,7 +163,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-38/38 测试通过、0 warning。
+39/39 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -238,6 +242,13 @@ tdx-l1stream seal --security sz000504 --root C:\new_tdx `
 tdx-l1stream kline --security sh600519 --period 1m --limit 300 `
                   --lc1-output output\lc1\sh600519.lc1 `
                   --output output\kline-1m.jsonl
+
+# 市场全景：先看有哪些视图（不需要取数）
+tdx-l1stream panorama --output output\panorama-catalog.jsonl
+
+# 再看某个视图的类型化投影
+tdx-l1stream panorama --view quality-rating --limit 100 `
+                     --output output\panorama-quality.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -2112,6 +2123,71 @@ if (bid2.volume_hand && ...)                   /* 量却在 */
 
 证据：`output/lc1_pack_verification_evidence.txt`。
 
+## 市场全景：`panorama`（10 个类型化投影 + catalog）
+
+十份 GX/AQFPH 资源的**类型化投影**：每个视图 = 一份 JSN 资源 + 一张 `(输出名, 源列)` 表，
+于是同一批原始行变成**读得懂的数据**而不是一堆列代码。
+
+| 视图 | 资源 | 字段数 |
+|---|---|---:|
+| `quality-rating` 量化吸引力评级 | `func_aqfph101_1.jsn` | 9 |
+| `capital-flow` 多周期资金流向 | `func_gx_zjlx101_1.jsn` | 9 |
+| `risk-watch` 质押商誉解禁风险 | `func_gx_fxgz101_1.jsn` | 13 |
+| `financials` 财报与估值摘要 | `func_gx_cbsj101_1.jsn` | **18** |
+| `earnings-forecast` 业绩预告与预测估值 | `func_gx_cbyg101_1.jsn` | 11 |
+| `analyst-estimate` 机构评级与盈利预测 | `func_gx_fxspj101_1.jsn` | 12 |
+| `distribution` 高送转与分红送配 | `func_gx_zfsp101_1.jsn` | 14 |
+| `lhb-overview` 龙虎榜成交与席位概览 | `func_gx_lhbd101_1.jsn` | 9 |
+| `margin-overview` 融资融券概览 | `func_gx_rzrq101_1.jsn` | 9 |
+| `ownership-change` 股东增减持区间 | `func_gx_zcjc101_1.jsn` | 8 |
+
+效果：`{"latest_score":"75","rating_change":"调高","risk_type":"财报亏损","leader_type":"筹码集中"}` ——
+**字段名读起来就是数据**。
+
+### 注册表是**机器提取**的，不是手抄的
+
+10 个视图约 **112 条字段映射**。手抄正是本项目前三轮反复栽跟头的那类工作，
+所以由 `output/make_panorama_views.py` **从参考自己的视图表里机械提取**并生成 C 表：
+参考本身就是"哪一列叫什么名"的权威，而机器不会把 `rzljlr20` 抄错。
+
+生成后**再对着十份真实资源核对**：**28,503 行**，**10 个视图的键列与全部 112 条字段列都存在** ✓
+机器提取排除了抄错，这一步排除了"参考本身已过期"。
+
+### 键列名**随注册表一起走**
+
+`lhb-overview` 用的是 `$SC1`/`$ZQDM1` 而不是 `$SC`/`$ZQDM`。**把键列写死会让这一个视图安静地一行都出不来。**
+
+### 顺带修掉一个真 bug：资源列名与信封键**重名**
+
+`func_gx_cbyg101_1.jsn` 有一列**字面就叫 `type`**（业绩预告类型），于是每行渲染成：
+
+```
+{"type":"jsn_row", ..., "type":"预计扭亏", ...}
+```
+
+**扁平信封里的 `type`/`resource`/`group`/`row` 会被同名的列遮蔽** ⇒ 任何"重复键留一个"的解析器
+都会丢掉另一边 ⇒ **该列数据不可达** ✗ 我的核对脚本正是因此把一份明明存在的资源数成 0 行。
+
+现在同名列出为 `<列名>_cell`，**并在汇总里报告 `columns_renamed`**：
+不丢数据，且调用方看得见发生过。
+
+### 空值约定
+
+`present` 的含义是"**这个单元格有字符**"。资源**没有那一列**与单元格**是空的**都算"没有值"，
+渲染成 `null`——**与项目其它渲染器一致**（未知值一律 `null`，而非空串），
+调用方不必去分辨"空"与"缺"。
+
+### 本轮我自己的三个错误
+
+1. **测试数据写错**：合成 JSON 第 4 行只给了 4 个单元格而表头 5 列 ⇒ 解析器**正确地拒绝**了它
+   （短行会让后面每一格都错位）。**是我的数据错，解析器的严格是对的。**
+2. **断言写错**：我断言"良构行每个字段都在"，但那个合成资源只有 9 列中的 3 列 ⇒
+   6 个字段**确实缺席**——而这恰恰是"列不存在"这种情形的**可达形式**。
+3. **崩溃点被缓冲吞掉**：测试访问越界时**一行输出都没有**，读起来像"崩在 main 之前"；
+   加 `setvbuf` 后才看清真正的失败在哪。
+
+证据：`output/panorama_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -2332,6 +2408,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_ranking` | 请求体 9 个字段**逐个断言**（含 `reverse` 的 0/1/2 三态，**降序是默认而非标志**）、页大小 1..80 的拒绝、排序键表（名称/大小写/十进制/十六进制/未知名）、分类拼写（`a-shares`/`a_share`/数字）、**由测试构造的报文**（varint 由辅助函数按数值生成，不手写）断言**前收高于现价的下跌情形**、买卖一价同样是差值、负的涨速/开盘抢筹、两段未建模字节按 hex、拒绝：超 80 条、**尾部多余字节**、市场越界、代码非数字、尾部截断、容量不足、渲染可被项目自己的解析器解析 |
 | `test_seal` | 三条路径**各自构造**（活体只在盘中命中其中一条）：**连续涨停**（现价==上限且卖一不存在 ⇒ 封单=买一量、金额 497,408,562、比值 7.359385）、**跌停方向**（金额与比值**为负**）、**两侧都有挂单即使现价恰在限价也不封**、竞价不平衡（无现价、两侧交叉，比值为 null 而非 0）、**竞价二档**（二档**价缺席而量存在**、一档量并入分母；**给二档设价格即跳出该分支**）、拒绝状态掩码 `0x3C`**不是**、`0x5C`**是**、限价不可用/每手为 0/无成交时各字段的可用性、渲染可被项目自己的解析器解析且输入随结果一起输出 |
 | `test_minute_pack` | **真实终端字节 → 解析 → 重新打包 → 逐字节相同**（不只是读取器命名的字段）、**违规窗口往返后仍然违规**（写入器不修正）、编码/解码在六年真实日期上**互为逆**、**2035-12-31 是可表达的最后一个日期**（年份界 4051 是假的界，16 位字才是）、日期/小时/分钟的拒绝、**量超出 32 位被拒而 0xFFFFFFFF 被接受**（是边界不是一刀切）、尾两字被原样带过而非丢弃 |
+| `test_panorama` | 注册表**整份**（`10 个视图 / 112 条字段映射 / 最宽 18 列`——生成器若静默少匹配，这几条会立刻失败）、每个资源前缀与**互不重复**、按 id 查找（大小写不敏感、未知拒绝）、**`catalog` 不是注册项而是视图**、`lhb-overview` 用 `$SC1/$ZQDM1` 而首个视图用 `$SC`（键列随注册表走）、合成投影（字段名映射、**资源缺列 ⇒ 缺席**、空单元格 ⇒ 无值、缺码/坏码的行跳过并计数）、渲染可被项目自己的解析器解析、**字段名出现而列代码不出现** |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -2377,9 +2454,9 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
-12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt`、`valuation`、`ranking`、
-    `seal_order`（涨价停规则 + 封单量/封单比）、以及 `minute_download*` 的
-    **A 股分钟线下载与 `.lc1` 落盘**已交付；还剩——`panorama`。
+12. **`market/` 下在范围内的模块**：`daily`、`minute`、`hyzt`、`valuation`、`ranking`、
+    `seal_order`、`panorama`、以及 `minute_download*` 的 **A 股分钟线下载与 `.lc1` 落盘**
+    均已交付。**这一项已清空。**
 13. **扩展市场（期货/期权）的分钟线**：`MinuteBar` 带 `open_interest`/`auxiliary_price`，
     `ExpansionInstrument` 的合约乘数来自 `0x23F5`；**这些字段 `.lc1` 装不下**，
     属于扩展市场那一层，范围归属未判定。

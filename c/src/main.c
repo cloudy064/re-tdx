@@ -13,6 +13,7 @@
  *   valuation   index valuation: the current table and its PE/PB history
  *   ranking     the category ranking over 0x054B, paged
  *   seal        the sealed-order figure for one security, from its 0x0547 depth
+ *   panorama    the market panorama: ten typed projections, and the catalog
  *   trades      L1 trade details (minute resolution) for today or one date
  *   kline       multi-period K-lines (0x052D)
  *   timeline    today's intraday time-share series (0x0537)
@@ -73,6 +74,8 @@
 #include "tdx_pending_json.h"
 #include "tdx_limits_json.h"
 #include "tdx_snapshot.h"
+#include "tdx_panorama.h"
+#include "tdx_panorama_json.h"
 #include "tdx_ranking.h"
 #include "tdx_seal.h"
 #include "tdx_seal_json.h"
@@ -262,6 +265,7 @@ typedef struct cli_options {
     const char *name;
     const char *sort;
     const char *lc1_output;
+    const char *view;
     int ascending;
     double previous_close;
     int has_previous_close;
@@ -593,6 +597,8 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
             options->prefix = value;
         } else if (strcmp(argument, "--lc1-output") == 0) {
             options->lc1_output = value;
+        } else if (strcmp(argument, "--view") == 0) {
+            options->view = value;
         } else if (strcmp(argument, "--sort") == 0) {
             options->sort = value;
         } else if (strcmp(argument, "--name") == 0) {
@@ -2268,6 +2274,16 @@ close_output:
 /* jsn                                                                 */
 /* ------------------------------------------------------------------ */
 
+/* The four keys the flat row envelope writes itself.  A resource column with one of these
+ * names cannot be emitted beside them without one shadowing the other. */
+static int jsn_envelope_collision(const char *name) {
+    if (!name)
+        return 0;
+    return strcmp(name, "type") == 0 || strcmp(name, "resource") == 0 ||
+           strcmp(name, "group") == 0 || strcmp(name, "row") == 0;
+}
+/* ------------------------------------------------------------------ */
+
 /* Fetches one JSN resource through the file-transfer commands, converts it from
  * GBK and flattens its groups into one JSONL row per record. */
 static int command_jsn(const cli_options *options, tdx_error *err) {
@@ -2282,7 +2298,10 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
     size_t group_index;
     size_t row;
     size_t group_count = 0;
-    size_t row_count = 0;
+    size_t row_count = 0;    /* How many columns had to be renamed because the resource names one like the
+     * envelope does. */
+    size_t columns_renamed = 0;
+
     size_t bonds_named = 0;
     size_t bonds_underlying = 0;
     size_t bonds_sized = 0;
@@ -2405,8 +2424,18 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
                 goto close_output;
             for (column = 0; column < group->column_count; ++column) {
                 const char *name = tdx_jsn_column_name(&document, group, column);
+                char renamed[128];
                 if (tdx_buf_append(&line, ",", 1, err) != TDX_OK)
                     goto close_output;
+                /* A COLUMN NAMED LIKE ONE OF THE ENVELOPE'S OWN KEYS WOULD BE SHADOWED.
+                 * list/func_gx_cbyg101_1.jsn has a column called "type", and a row that
+                 * carries two "type" keys loses one of them in any parser - so that column
+                 * would be unreachable.  It is renamed, and the summary says how many were. */
+                if (jsn_envelope_collision(name)) {
+                    snprintf(renamed, sizeof(renamed), "%s_cell", name ? name : "");
+                    name = renamed;
+                    columns_renamed++;
+                }
                 /* The column name comes from the resource, so it is escaped rather
                  * than pasted: a header with a quote in it must not break the row. */
                 if (tdx_format_json_string(&line, name ? name : "", err) != TDX_OK)
@@ -2444,8 +2473,10 @@ static int command_jsn(const cli_options *options, tdx_error *err) {
             goto close_output;
     } else if (tdx_buf_append_printf(&line, err,
                                      "{\"type\":\"jsn_summary\",\"resource\":\"%s\",\"bytes\":%zu,"
-                                     "\"md5\":\"%s\",\"groups\":%zu,\"rows\":%zu,\"endpoint\":",
-                                     remote, raw.len, info.md5, group_count, row_count) != TDX_OK) {
+                                     "\"md5\":\"%s\",\"groups\":%zu,\"rows\":%zu,"
+                                     "\"columns_renamed\":%zu,\"endpoint\":",
+                                     remote, raw.len, info.md5, group_count, row_count,
+                                     columns_renamed) != TDX_OK) {
         goto close_output;
     } else if (tdx_format_json_string(&line, endpoint, err) != TDX_OK) {
         goto close_output;
@@ -4588,6 +4619,147 @@ done:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* panorama                                                            */
+/* ------------------------------------------------------------------ */
+
+/* The market panorama.  With no --view it emits the catalog, which needs no fetch at all: the
+ * registry is compiled in, so a caller can discover what exists without a network round trip.
+ * A named view fetches its resource and projects the rows through the view's own field list. */
+static int command_panorama(const cli_options *options, tdx_error *err) {
+    static tdx_jsn_document document;
+    static tdx_buf raw;
+    static tdx_buf utf8;
+    static tdx_buf line;
+    const tdx_panorama_view *view = NULL;
+    tdx_panorama_row *rows = NULL;
+    tdx_file_info info;
+    char remote[192];
+    char endpoint[80];
+    FILE *stream = NULL;
+    size_t row_count = 0;
+    size_t skipped = 0;
+    size_t emitted = 0;
+    size_t index;
+    int status = TDX_ERR;
+
+    tdx_buf_init(&raw);
+    tdx_buf_init(&utf8);
+    tdx_buf_init(&line);
+    tdx_jsn_document_init(&document);
+    memset(&info, 0, sizeof(info));
+    memset(endpoint, 0, sizeof(endpoint));
+
+    /* The catalog view is the default, and it is not a resource fetch. */
+    if (!options->view || !*options->view || strcmp(options->view, "catalog") == 0) {
+        stream = open_output(options);
+        if (!stream) {
+            tdx_error_set(err, "cannot open output %s",
+                          options->output ? options->output : "<stdout>");
+            goto done;
+        }
+        for (index = 0; index < tdx_panorama_view_count; ++index) {
+            if (options->max_records && emitted >= options->max_records)
+                break;
+            tdx_buf_clear(&line);
+            if (tdx_panorama_format_view(&line, &tdx_panorama_views[index], index, err) !=
+                TDX_OK)
+                goto close_output;
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+                fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the catalog");
+                goto close_output;
+            }
+            emitted++;
+        }
+        tdx_buf_clear(&line);
+        if (tdx_panorama_format_summary(&line, "catalog", NULL, emitted, 0, NULL, err) !=
+            TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+            fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the summary");
+            goto close_output;
+        }
+        status = TDX_OK;
+        if (!options->quiet)
+            fprintf(stderr, "panorama: catalog of %zu views\n", tdx_panorama_view_count);
+        goto close_output;
+    }
+
+    view = tdx_panorama_find(options->view);
+    if (!view) {
+        tdx_error_set(err, "there is no view called %s; --view catalog lists them",
+                      options->view);
+        goto done;
+    }
+    if (tdx_jsn_remote_path(view->resource, "bi", remote, sizeof(remote), err) != TDX_OK)
+        goto done;
+    if (tdx_download_resource(&options->pool, options->timeout_ms, remote, 1, &raw, &info,
+                              endpoint, sizeof(endpoint), err) != TDX_OK)
+        goto done;
+    if (tdx_jsn_gbk_to_utf8(raw.data, raw.len, &utf8, err) != TDX_OK)
+        goto done;
+    if (tdx_jsn_parse(utf8.data, utf8.len, &document, err) != TDX_OK)
+        goto done;
+    if (document.group_count != 1) {
+        tdx_error_set(err, "%s holds %zu groups, expected one", remote, document.group_count);
+        goto done;
+    }
+    rows = (tdx_panorama_row *)calloc(TDX_PANORAMA_ROWS_MAX, sizeof(*rows));
+    if (!rows) {
+        tdx_error_set(err, "out of memory for the panorama rows");
+        goto done;
+    }
+    if (tdx_panorama_project(view, &document, &document.groups[0], rows,
+                             TDX_PANORAMA_ROWS_MAX, &row_count, &skipped, err) != TDX_OK)
+        goto done;
+    if (!options->quiet)
+        fprintf(stderr, "panorama %s: %s, %zu bytes, %zu rows, %zu skipped\n", view->id,
+                view->resource, raw.len, row_count, skipped);
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    for (index = 0; index < row_count; ++index) {
+        if (options->max_records && emitted >= options->max_records)
+            break;
+        tdx_buf_clear(&line);
+        if (tdx_panorama_format_row(&line, view, &rows[index], index, err) != TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+            fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the panorama stream");
+            goto close_output;
+        }
+        emitted++;
+    }
+    tdx_buf_clear(&line);
+    if (tdx_panorama_format_summary(&line, view->id, view->resource, row_count, skipped,
+                                    endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+        fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output && stream)
+        fclose(stream);
+done:
+    free(rows);
+    tdx_jsn_document_free(&document);
+    tdx_buf_free(&raw);
+    tdx_buf_free(&utf8);
+    tdx_buf_free(&line);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -4706,6 +4878,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "newbond") == 0) {
         if (command_newbond(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "panorama") == 0) {
+        if (command_panorama(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

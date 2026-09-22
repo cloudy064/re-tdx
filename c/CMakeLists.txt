@@ -79,6 +79,9 @@ add_library(tdxl1core STATIC
     src/tdx_valuation.c
     src/tdx_ranking.c
     src/tdx_seal.c
+    src/tdx_panorama.c
+    src/tdx_panorama_views.c
+    src/tdx_panorama_json.c
     src/tdx_seal_json.c
     src/tdx_ranking_json.c
     src/tdx_valuation_json.c
@@ -131,7 +134,7 @@ foreach(pair "frame:test_frame" "quote:test_quote" "directory:test_directory"
              "bonds:test_bonds"
              "convertible:test_convertible"
              "convertible_join:test_convertible_join" "pending:test_pending" "subscription:test_subscription" "bond_math:test_bond_math" "pricing:test_pricing" "newbond:test_newbond" "professional:test_professional"
-             "professional_finance:test_professional_finance" "daily:test_daily" "minute:test_minute" "industry:test_industry" "limit:test_limit" "valuation:test_valuation" "ranking:test_ranking" "seal:test_seal" "minute_pack:test_minute_pack")
+             "professional_finance:test_professional_finance" "daily:test_daily" "minute:test_minute" "industry:test_industry" "limit:test_limit" "valuation:test_valuation" "ranking:test_ranking" "seal:test_seal" "minute_pack:test_minute_pack" "panorama:test_panorama")
     string(REPLACE ":" ";" parts "${pair}")
     list(GET parts 0 name)
     list(GET parts 1 source)
