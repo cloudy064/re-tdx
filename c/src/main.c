@@ -11,6 +11,7 @@
  *   industry    the industry valuation resource, folded into industries
  *   limit       the price-limit rules from hqrule.dat, and one security's limits
  *   valuation   index valuation: the current table and its PE/PB history
+ *   ranking     the category ranking over 0x054B, paged
  *   trades      L1 trade details (minute resolution) for today or one date
  *   kline       multi-period K-lines (0x052D)
  *   timeline    today's intraday time-share series (0x0537)
@@ -71,6 +72,8 @@
 #include "tdx_pending_json.h"
 #include "tdx_limits_json.h"
 #include "tdx_snapshot.h"
+#include "tdx_ranking.h"
+#include "tdx_ranking_json.h"
 #include "tdx_snapshot_json.h"
 #include "tdx_format.h"
 #include "tdx_hub.h"
@@ -254,6 +257,8 @@ typedef struct cli_options {
     const char *zip;
     const char *code;
     const char *name;
+    const char *sort;
+    int ascending;
     double previous_close;
     int has_previous_close;
     const char *kind;
@@ -376,6 +381,10 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
         }
         if (strcmp(argument, "--quiet") == 0) {
             options->quiet = 1;
+            continue;
+        }
+        if (strcmp(argument, "--ascending") == 0) {
+            options->ascending = 1;
             continue;
         }
         if (strcmp(argument, "--index") == 0) {
@@ -578,6 +587,8 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
             options->resource = value;
         } else if (strcmp(argument, "--prefix") == 0) {
             options->prefix = value;
+        } else if (strcmp(argument, "--sort") == 0) {
+            options->sort = value;
         } else if (strcmp(argument, "--name") == 0) {
             options->name = value;
         } else if (strcmp(argument, "--prev") == 0) {
@@ -4276,6 +4287,140 @@ done:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* ranking                                                             */
+/* ------------------------------------------------------------------ */
+
+/* The 0x054B category ranking.  Paged in the server's own 80-record pages, fetched until
+ * the caller's limit is reached or a short page says the list has ended. */
+static int command_ranking(const cli_options *options, tdx_error *err) {
+    static tdx_buf line;
+    tdx_ranking_record *records = NULL;
+    tdx_connection connection;
+    FILE *stream = NULL;
+    char endpoint[80];
+    uint16_t category = TDX_RANKING_CATEGORY_A_SHARES;
+    uint16_t sort = 0x000E; /* change-pct: a ranking without a key is a list, not a ranking */
+    size_t want = options->limit > 0 ? (size_t)options->limit : 80;
+    size_t start = options->start > 0 ? (size_t)options->start : 0;
+    size_t stored = 0;
+    size_t pages = 0;
+    int status = TDX_ERR;
+
+    if (options->category && *options->category &&
+        !tdx_ranking_category_id(options->category, &category)) {
+        tdx_error_set(err, "--category must be a name like a-shares or a number");
+        return TDX_ERR;
+    }
+    if (options->sort && *options->sort && !tdx_ranking_sort_id(options->sort, &sort)) {
+        tdx_error_set(err, "--sort must be a key like change-pct, or a number");
+        return TDX_ERR;
+    }
+    if (start > 0xFFFF || want > TDX_RANKING_RECORDS_MAX) {
+        tdx_error_set(err, "--start must be up to 65535 and --limit up to %d",
+                      TDX_RANKING_RECORDS_MAX);
+        return TDX_ERR;
+    }
+    records = (tdx_ranking_record *)calloc(TDX_RANKING_RECORDS_MAX, sizeof(*records));
+    if (!records) {
+        tdx_error_set(err, "out of memory for the ranking records");
+        return TDX_ERR;
+    }
+    tdx_buf_init(&line);
+    memset(endpoint, 0, sizeof(endpoint));
+    memset(&connection, 0, sizeof(connection));
+    connection.socket_handle = (intptr_t)-1;
+    if (tdx_connection_open(&connection, &options->pool.items[0], options->timeout_ms, err) !=
+        TDX_OK)
+        goto done;
+    tdx_endpoint_address(&options->pool.items[0], endpoint, sizeof(endpoint));
+
+    while (stored < want) {
+        tdx_buf request;
+        tdx_buf response;
+        tdx_ranking_page page;
+        size_t take = want - stored;
+        if (take > TDX_RANKING_PAGE_MAX)
+            take = TDX_RANKING_PAGE_MAX;
+        tdx_buf_init(&request);
+        tdx_buf_init(&response);
+        if (tdx_ranking_build_request(category, sort, (uint16_t)(start + stored), (uint16_t)take,
+                                      options->ascending, (uint16_t)options->field_id, &request,
+                                      err) != TDX_OK) {
+            tdx_buf_free(&request);
+            tdx_buf_free(&response);
+            goto close_connection;
+        }
+        if (tdx_connection_call(&connection, TDX_CMD_CATEGORY_QUOTES, request.data, request.len,
+                                &response, err) != TDX_OK) {
+            tdx_buf_free(&request);
+            tdx_buf_free(&response);
+            goto close_connection;
+        }
+        if (tdx_ranking_parse(response.data, response.len, records + stored,
+                              TDX_RANKING_RECORDS_MAX - stored, &page, err) != TDX_OK) {
+            tdx_buf_free(&request);
+            tdx_buf_free(&response);
+            goto close_connection;
+        }
+        pages++;
+        stored += page.records;
+        /* A page shorter than asked for means the list ended, and asking again would only
+         * repeat it. */
+        if (page.records < take) {
+            tdx_buf_free(&request);
+            tdx_buf_free(&response);
+            break;
+        }
+        tdx_buf_free(&request);
+        tdx_buf_free(&response);
+    }
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto close_connection;
+    }
+    {
+        size_t index;
+        for (index = 0; index < stored; ++index) {
+            tdx_buf_clear(&line);
+            if (tdx_ranking_format(&line, &records[index], start + index, category, sort,
+                                   err) != TDX_OK)
+                goto close_output;
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+                fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the ranking stream");
+                goto close_output;
+            }
+        }
+    }
+    tdx_buf_clear(&line);
+    if (tdx_ranking_format_summary(&line, category, sort, options->ascending, stored, pages,
+                                   endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+        fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the ranking summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+close_connection:
+    tdx_connection_close(&connection);
+    if (status == TDX_OK && !options->quiet)
+        fprintf(stderr, "ranking category %u sort %u: %zu records over %zu pages\n", category,
+                sort, stored, pages);
+done:
+    free(records);
+    tdx_buf_free(&line);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -4394,6 +4539,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "newbond") == 0) {
         if (command_newbond(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "ranking") == 0) {
+        if (command_ranking(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

@@ -79,6 +79,8 @@ c/
     tdx_limit.h            hqrule.dat 的涨跌停规则与限价计算
     tdx_valuation.h        指数估值：当前表 + PE/PB 历史合并
     tdx_valuation_json.h   指数/历史点/合并报告/基金的 JSONL 渲染
+    tdx_ranking.h          0x054B 分类行情排名（价格是相对收盘的差值）
+    tdx_ranking_json.h     排名行与汇总的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -101,6 +103,7 @@ c/
     tdx_professional_finance.c  tdx_zip.c  tdx_daily.c  tdx_daily_json.c
     tdx_minute.c  tdx_minute_json.c  tdx_industry.c  tdx_industry_json.c
     tdx_limit.c  tdx_valuation.c  tdx_valuation_json.c
+    tdx_ranking.c  tdx_ranking_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -130,6 +133,7 @@ c/
     test_industry.c  industry_fixtures.h (generated, whole industries)
     test_limit.c (the real hqrule.dat, inline, and the rounding arithmetic)
     test_valuation.c  valuation_fixtures.h (generated, master whole)
+    test_ranking.c (a response built by the test, its varints computed)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
 ```
@@ -150,7 +154,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-35/35 测试通过、0 warning。
+36/36 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -216,6 +220,10 @@ tdx-l1stream valuation --output output\valuation.jsonl
 # 加上某个指数的 PE/PB 历史（按日期合并）与跟踪它的基金
 tdx-l1stream valuation --security sh000001 `
                       --output output\valuation-000001.jsonl
+
+# 分类行情排名（0x054B）：按涨幅降序，服务端分页
+tdx-l1stream ranking --sort change-pct --limit 100 `
+                    --output output\ranking.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -1890,6 +1898,74 @@ points 3093，both_sides 3093，pe_only 0，pb_only 0，complete true
 
 证据：`output/valuation_verification_evidence.txt`。
 
+## 分类行情排名：`0x054B`（`ranking`）
+
+一条**新的协议命令**：按某个排序键给一个分类的证券排名，服务端分页。
+
+### 请求与记录形状
+
+请求体 **18 字节 = 9 个 u16**：`category, sort, start, count, reverse, 5, filter_raw, 1, 0`，
+其中 **`reverse = sort==0 ? 0 : (升序 ? 2 : 1)`**——**降序是默认，它不是一个布尔标志**。
+
+记录**既不是定长也不是纯 varint**：
+
+```
+0        u8      市场 0..2
+1..6     char[6] 六位数字代码
+7        u16     active1
+9        九个 varint：close，然后是【相对它的四个差值】、服务器时间、一个原始价、两个手数
+之后      u32     成交额（wire 自身的缩放形式）
+之后      八个 varint：内盘、外盘、一个原始值、开盘金额（×100 元）、买卖一价（**也是差值**）及其量
+之后      56 字节定长尾：涨速、短换手、两个 f32、**两段未建模字节**、active2
+```
+
+### 五个价格是**相对收盘价的差值**
+
+`close` 是绝对值，**前收/开/高/低四个都是 `close + Δ`**。把每个 varint 当绝对价格读，
+会**得到一个对、四个错——而且看起来仍然像价格**。varint 是**符号-数值**编码
+（首字节 `0x40` 位是符号，与参考实现逐字相同），所以前收高于现价（下跌）也能正确表示。
+
+价格口径复用线上除数表：`raw / 100 / tdx_price_divisor(code)`。
+
+### 排序自洽：整页的**推导涨幅必须单调不增**
+
+记录**不带涨幅字段**，所以涨幅只能由两个价格推出。实测 **80 条整页，单调性 0 处破坏**：
+
+| 排名 | 证券 | 现价 | 推导涨幅 |
+|---:|---|---:|---:|
+| 1 | SZ301686 | 288.00 | **+420.98%** |
+| 2 | BJ920229 | 67.00 | **+327.57%** |
+| 3 | BJ920526 | 26.13 | **+29.94%** |
+| 4 | BJ920427 | 14.10 | **+27.83%** |
+| 5 | SZ300110 | 3.95 | **+20.06%** |
+| … | … | … | … |
+| 79 | SZ002467 | 5.09 | **+9.94%** |
+| 80 | SZ000607 | 4.98 | **+9.93%** |
+
+**单调不增说明"排序"与"差值解码"同时对**：差值读错的话，推出的涨幅会变成一堆无意义的数，
+不可能恰好递减。
+
+而且**这张表本身是跨层印证**：尾部正好落在 **9.93–10.0%**、中间出现 **20.06%** 与 **29.94%**——
+正是第 15 轮 `limit` 模块算出的**三档涨跌停**；顶部的 +421%/+327% 是**新股上市首日**
+（创业板/北交所首日无涨跌幅限制，可以涨几倍）。**把它当 bug 的人，是默认了 10% 或 20% 的涨跌幅。**
+
+### 有意保留原样
+
+尾偏移 12 的 10 字节与偏移 30 的 24 字节**语义未确立**，按 hex 原样输出
+（`extra_pair_hex` / `extra_meta_hex`）——与 L1 命令里那两段未建模尾部同样处理。
+
+### 三个自己的错误
+
+1. **includes 加错锚点**：`main.c` 不 include `tdx_quote.h`（它按模块逐个 include），
+   于是头文件根本没加进去，整片编译失败。
+2. **`--category` 已被 `securities` 占用**（`all|a_share|etf|index`，默认 `a_share`），
+   我的分类解析一开始拒了这个默认值，于是命令直接不可用；改为接受该目录分类的拼写
+   （`a_share` → 6），不再多出一个选项。
+3. 测试里我一度想手写 varint 字节；改为**由辅助函数按数值生成**
+   （连续三轮栽在手写二进制字段上之后的做法）。
+
+证据：`output/ranking_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -2107,6 +2183,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_industry` | **保留整行业的 fixture**（前缀会把行业切半，让"声明==实测"在 fixture 里失败而在真实文件上成立）、三个行业的两种计数**逐一对上**、**存在题材数 > 1 的行**（顿号计数去掉即失败）、负市盈率**按数字解析而非当作缺失**、缺码的行跳过并计数、**同类不一致记录而不拒绝**（合成行）、渲染可被项目自己的解析器解析、缺行业名渲染 null |
 | `test_limit` | **真实 hqrule.dat 的字节**（`[节名]` + 裸 `key=value`、注释、空行）、切换日 99991231 与默认值 0 的差别（**同一只 ST 股两种规则各算一次**）、三个板块的费率、**三步取整与 0.503 偏置**（需要进位的值上断言）、**北交所截断与主板四舍五入在同一个值上不相等**、非限价品种/无前收/`N` 开头新股的拒绝、规则表为 NULL 时回落到默认 |
 | `test_valuation` | **整份主表**（11 行全断言）、标签按 **UTF-8 字节精确比对**（只查"非空"会放过乱码）、四个收益字段、每行都带明细 id、**真实 PE/PB 前缀按日期合并**（20 点全部两侧都有、值来自两个资源、升序）、合成行覆盖 **pe_only / pb_only / 输入乱序 / 单侧缺失**、基金字段（净值/溢价/规模/类型）、**四个渲染器全部断言可解析**（漏掉的那个正是出错的） |
+| `test_ranking` | 请求体 9 个字段**逐个断言**（含 `reverse` 的 0/1/2 三态，**降序是默认而非标志**）、页大小 1..80 的拒绝、排序键表（名称/大小写/十进制/十六进制/未知名）、分类拼写（`a-shares`/`a_share`/数字）、**由测试构造的报文**（varint 由辅助函数按数值生成，不手写）断言**前收高于现价的下跌情形**、买卖一价同样是差值、负的涨速/开盘抢筹、两段未建模字节按 hex、拒绝：超 80 条、**尾部多余字节**、市场越界、代码非数字、尾部截断、容量不足、渲染可被项目自己的解析器解析 |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -2152,8 +2229,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
-12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt`、`valuation`、
-    以及 `seal_order` 的**涨跌停规则半边**已交付；还剩——`panorama`、`ranking`、
+12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt`、`valuation`、`ranking`、
+    以及 `seal_order` 的**涨跌停规则半边**已交付；还剩——`panorama`、
     `minute_download*`（分钟线的下载与展开），以及 `seal_order` 的**封单量/封单比**半边
     （需要五档盘口与竞价不平衡量）。
 13. **板块层级展开**：`hyzt` 之上还有一层父子板块/成员并集/层级树，依赖
