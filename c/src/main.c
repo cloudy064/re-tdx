@@ -17,6 +17,7 @@
  *   jsn         fetch a JSN resource and emit its rows (0x02C5 / 0x06B9 + JSON)
  *   convertible fetch and join the six convertible-bond documents
  *   pending     the announced-but-unlisted convertible-bond plans
+ *   subscription convertible-bond subscription events with derived valuation
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +40,8 @@
 #include "tdx_jsn.h"
 #include "tdx_limits.h"
 #include "tdx_pending.h"
+#include "tdx_subscription.h"
+#include "tdx_subscription_json.h"
 #include "tdx_pending_json.h"
 #include "tdx_limits_json.h"
 #include "tdx_snapshot.h"
@@ -80,7 +83,8 @@ static void usage(void) {
     printf("  tdx-l1stream limits [--start N] [options]\n");
     printf("  tdx-l1stream jsn --resource PATH [options]\n");
     printf("  tdx-l1stream convertible [options]\n");
-    printf("  tdx-l1stream pending [options]\n\n");
+    printf("  tdx-l1stream pending [options]\n");
+    printf("  tdx-l1stream subscription [options]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -2618,6 +2622,112 @@ close_output:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* subscription                                                        */
+/* ------------------------------------------------------------------ */
+
+/* The subscription events, with the conversion value and the premium derived here
+ * because the resource does not carry them. */
+static int command_subscription(const cli_options *options, tdx_error *err) {
+    static tdx_jsn_document document;
+    static tdx_subscription_row rows[TDX_SUBSCRIPTION_ROWS_MAX];
+    static tdx_buf raw;
+    static tdx_buf utf8;
+    static tdx_buf line;
+    tdx_file_info info;
+    char remote[128];
+    char endpoint[80];
+    FILE *stream;
+    size_t count = 0;
+    size_t skipped = 0;
+    size_t index;
+    size_t listed = 0;
+    size_t with_value = 0;
+    size_t with_premium = 0;
+    int status = TDX_ERR;
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        return TDX_ERR;
+    }
+    tdx_buf_init(&raw);
+    tdx_buf_init(&utf8);
+    tdx_buf_init(&line);
+    tdx_jsn_document_init(&document);
+    memset(&info, 0, sizeof(info));
+    memset(endpoint, 0, sizeof(endpoint));
+
+    if (tdx_jsn_remote_path(TDX_SUBSCRIPTION_RESOURCE, "bi", remote, sizeof(remote), err) !=
+        TDX_OK)
+        goto close_output;
+    if (tdx_download_resource(&options->pool, options->timeout_ms, remote, 1, &raw, &info,
+                              endpoint, sizeof(endpoint), err) != TDX_OK)
+        goto close_output;
+    if (tdx_jsn_gbk_to_utf8(raw.data, raw.len, &utf8, err) != TDX_OK)
+        goto close_output;
+    if (tdx_jsn_parse(utf8.data, utf8.len, &document, err) != TDX_OK)
+        goto close_output;
+    if (document.group_count != 1) {
+        tdx_error_set(err, "%s holds %zu groups, expected one", remote, document.group_count);
+        goto close_output;
+    }
+    if (tdx_subscription_normalize(&document, &document.groups[0], rows,
+                                   TDX_SUBSCRIPTION_ROWS_MAX, &count, &skipped, err) != TDX_OK)
+        goto close_output;
+    if (!options->quiet)
+        fprintf(stderr, "subscription %s: %zu bytes, md5=%s, %zu rows (%zu skipped)\n", remote,
+                raw.len, info.md5, count, skipped);
+
+    for (index = 0; index < count; ++index) {
+        tdx_buf_clear(&line);
+        if (tdx_subscription_format(&line, &rows[index], TDX_SUBSCRIPTION_RESOURCE, index, err) !=
+            TDX_OK)
+            goto close_output;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto close_output;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the subscription stream");
+            goto close_output;
+        }
+        if (rows[index].listed)
+            listed++;
+        if (rows[index].has_conversion_value_yuan)
+            with_value++;
+        if (rows[index].has_conversion_premium_pct)
+            with_premium++;
+    }
+
+    tdx_buf_clear(&line);
+    if (tdx_subscription_format_summary(&line, count, skipped, listed, with_value, with_premium,
+                                        TDX_SUBSCRIPTION_RESOURCE, endpoint, err) != TDX_OK)
+        goto close_output;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto close_output;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the subscription summary");
+        goto close_output;
+    }
+    status = TDX_OK;
+
+close_output:
+    if (options->output)
+        fclose(stream);
+    tdx_jsn_document_free(&document);
+    tdx_buf_free(&raw);
+    tdx_buf_free(&utf8);
+    tdx_buf_free(&line);
+    if (status != TDX_OK)
+        return status;
+    if (!options->quiet)
+        fprintf(stderr,
+                "subscription: %zu events, %zu listed, %zu with a conversion value, %zu with a "
+                "premium\n",
+                count, listed, with_value, with_premium);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -2715,6 +2825,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "pending") == 0) {
         if (command_pending(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "subscription") == 0) {
+        if (command_subscription(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

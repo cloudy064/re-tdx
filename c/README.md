@@ -59,6 +59,8 @@ c/
     tdx_convertible_join.h 可转债六文档连接
     tdx_pending.h          dfkzz201 待发计划表与集合对账
     tdx_pending_json.h     待发行的 JSONL 渲染
+    tdx_subscription.h     申购事件与两个派生指标
+    tdx_subscription_json.h 申购事件的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -75,6 +77,7 @@ c/
     tdx_limits.c  tdx_limits_json.c  tdx_json.c  tdx_jsn.c
     tdx_bonds.c  tdx_bonds_json.c  tdx_convertible.c  tdx_convertible_json.c
     tdx_convertible_join.c  tdx_pending.c  tdx_pending_json.c
+    tdx_subscription.c  tdx_subscription_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -93,6 +96,7 @@ c/
     test_convertible.c  convertible_fixtures.h (generated, six reduced captures)
     test_convertible_join.c  (the same six fixtures, joined)
     test_pending.c   pending_fixtures.h (generated, reduced capture)
+    test_subscription.c  subscription_fixtures.h (generated, reduced capture)
 ```
 
 ## 构建
@@ -111,7 +115,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-24/24 测试通过、0 warning。
+25/25 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -223,6 +227,10 @@ tdx-l1stream convertible --root C:\new_tdx `
 # 待发计划表 + 两份投影的集合对账
 tdx-l1stream pending --root C:\new_tdx `
                      --output output\pending.jsonl
+
+# 申购事件（含转股价值与溢价率两个派生指标）
+tdx-l1stream subscription --root C:\new_tdx `
+                          --output output\subscription.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -1168,6 +1176,56 @@ SH605589 / SZ000422 / SZ002997）。若把它们当成同一份数据的不同�
 
 证据：`output/pending_verification_evidence.txt`。
 
+## 可转债申购（`subscription`）
+
+资源 `bi/list/func_kkzss101_1.jsn`：**50,783 字节 / 319 行 × 16 列**（活体实测）。
+
+### 两个派生指标（资源本身不带，是本层算的）
+
+```
+转股价值 = 正股收盘价 × 100 / 转股价
+溢价率   = (债券收盘价 − 转股价值) × 100 / 转股价值
+```
+
+`100` 是面值（元），所以转股价值就是"一张债券转成股票值多少钱"。**两处除法都有保护**：
+转股价为 0 或转股价值为 0 时字段**缺失**，而不是产出无穷大或一个读起来像真数字的 0。
+这正是 `has_*` 标志存在的意义，测试用 0 / −0 / 无穷 / NULL 四种输入逐条断言这两道保护。
+
+### 验证
+
+| 检验 | 结果 |
+|---|---|
+| 首行（南航转债）派生指标 | `4.950 × 100 / 6.170 = 80.226904`、`(106.368 − 80.226904) × 100 / 80.226904 = 32.583952%` |
+| **独立重算**（Python 从同样输入再算一遍） | 转股价值 **319/319**、溢价率 **319/319**，最大偏差 **4.99e-07** |
+| **跨视图对账**：两个视图都有转股价的债券 | **314 只，全部一致，0 只不一致** |
+| 活体汇总 | 319 事件、0 行跳过、315 已上市、319 有转股价值、319 有溢价率 |
+
+两条独立路径的**跨视图对账**是这里最有价值的一条：申购文档的 `zgj` 与概览文档的 `ZGJ`
+是同一只债券的转股价，来自两份不同的资源，314 只全部读出同一个数——这同时检验了两个
+字段映射，而不是各自自洽。
+
+关于"独立重算"还有一个**方法上的教训**记在证据里：我的证据脚本第一版用 `1e-9` 容差去比一个
+只打印了六位小数的结果，于是报出"319 行里只有 4 行一致"。**那是在量打印精度，不是在量算术**——
+容差必须与证据的精度匹配。最大偏差 4.99e-07 正好是 `%.6f` 的半个最小位，说明差异纯粹来自舍入。
+
+### 与待发表的另一处不同
+
+申购行**必须**同时能读出债券与正股两套身份（代码 + 市场），缺一即跳过并计数——
+"挂不到债券和标的上的事件不算事件"。待发表则只要求正股可读。
+
+### 事件 id
+
+形如 `convertible-subscription:<市场>:<债券代码>:<申购日>`，照参考实现的拼法，
+便于识别"同一个事件出现两次"。申购日缺失时 id 以冒号结尾——参考实现也是这样。
+
+### 未移植
+
+- 参考实现的**新债投影**（`list/gxjty_zq_xkzz102_1.jsn`）与申购行的匹配报告
+  （按申购代码优先、标的兜底匹配，报告申购日不一致与发行规模差额，并做 hybrid/stale 分类）；
+- **定价视图**（`list/gxjty_zq_kzzsy101_1.jsn`）。
+
+证据：`output/subscription_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1362,6 +1420,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_convertible` | 可交换债判定（132 前缀，含截断码）、**55 列 × 3 行真实抓包**的字段映射、中文精确比对、`core_terms_complete` 判据、**ZGDM"要么空要么六位数字"的实测断言**、概览缺失列回到"缺失而非 0"、缺代码/市场非数字的拒绝、**渲染括号平衡**（该检查抓出了漏掉的 overview 右括号） |
 | `test_convertible_join` | 六份 fixture 的列数与源行数、**键并集为 3**（同一批债券在六份里，所以不是 18）与容量不足的拒绝、SH110076 六路全部命中、**三组触发条款取值必须互不相同**（一份文档读三遍会产出一模一样的触发条款）、票息列表条数 == 期数、只给一份文档/不给概览时仍能连接并把缺失报为缺失、**连接后渲染的括号平衡** |
 | `test_pending` | **16 列小写列名**的真实抓包前三行映射、两类中文取值精确比对、`gdpsl` 列存在但为空渲染为 `null` 而非 0、短代码/非数字市场**跳过并计数**（与上市视图"直接报错"相反）、容量不足的拒绝、集合对账的六种情形（顺序不同仍相等 / 两侧各有差异 / 重复身份折叠 / 空身份不算证券 / 空投影 / 两个空集）、渲染括号平衡 |
+| `test_subscription` | 两个派生指标在抓包数字上的取值、**除法保护**（转股价 0 / −0 / 无穷、转股价值 0 / 无穷、NULL 输出）、**16 列**真实抓包前三行的映射、三类中文名精确比对、事件 id 拼法与缺日期时的尾冒号、债券或正股身份任一不可读即**跳过并计数**、身份齐全但输入全空时事件仍成立且两个指标**缺失而非 0**、渲染括号平衡 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1370,9 +1429,9 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **可转债的申购与定价两个视图**：六文档连接、换股替换/投影兜底、待发计划表与
-   集合对账都已就位；`func_kkzss101`（申购，含转股价值与溢价率的派生计算）与
-   `gxjty_zq_kzzsy101`（定价）尚未移植。
+6. **可转债的定价视图与新债投影对账**：六文档连接、换股替换/投影兜底、待发计划表、
+   申购（含派生指标）都已就位；`gxjty_zq_kzzsy101`（定价）与 `gxjty_zq_xkzz102`
+   （新债投影与申购的匹配报告）尚未移植。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi
