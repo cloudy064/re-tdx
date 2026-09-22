@@ -68,6 +68,8 @@ add_library(tdxl1core STATIC
     src/tdx_pricing_json.c
     src/tdx_newbond.c
     src/tdx_newbond_json.c
+    src/tdx_professional.c
+    src/tdx_professional_json.c
     src/tdx_subscription.c
     src/tdx_subscription_json.c
 )
@@ -113,7 +115,7 @@ foreach(pair "frame:test_frame" "quote:test_quote" "directory:test_directory"
              "gbbq:test_gbbq" "limits:test_limits" "json:test_json" "jsn:test_jsn"
              "bonds:test_bonds"
              "convertible:test_convertible"
-             "convertible_join:test_convertible_join" "pending:test_pending" "subscription:test_subscription" "bond_math:test_bond_math" "pricing:test_pricing" "newbond:test_newbond")
+             "convertible_join:test_convertible_join" "pending:test_pending" "subscription:test_subscription" "bond_math:test_bond_math" "pricing:test_pricing" "newbond:test_newbond" "professional:test_professional")
     string(REPLACE ":" ";" parts "${pair}")
     list(GET parts 0 name)
     list(GET parts 1 source)
@@ -121,6 +123,7 @@ foreach(pair "frame:test_frame" "quote:test_quote" "directory:test_directory"
     target_link_libraries(tdx-l1stream-${name}-tests PRIVATE tdxl1core)
     add_test(NAME l1stream-${name} COMMAND tdx-l1stream-${name}-tests)
 endforeach()
+
 
 
 

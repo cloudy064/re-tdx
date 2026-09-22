@@ -19,6 +19,7 @@
  *   pending     the announced-but-unlisted convertible-bond plans
  *   subscription convertible-bond subscription events with derived valuation
  *   newbond     the new-bond projection reconciled against the subscriptions
+ *   professional parse a local professional-data .dat file (stock/market/board)
  *   pricing     convertible-bond terms joined with live quotes and valued
  */
 #include <stdio.h>
@@ -44,6 +45,8 @@
 #include "tdx_limits.h"
 #include "tdx_pending.h"
 #include "tdx_newbond.h"
+#include "tdx_professional.h"
+#include "tdx_professional_json.h"
 #include "tdx_newbond_json.h"
 #include "tdx_pricing.h"
 #include "tdx_pricing_json.h"
@@ -93,7 +96,9 @@ static void usage(void) {
     printf("  tdx-l1stream pending [options]\n");
     printf("  tdx-l1stream subscription [options]\n");
     printf("  tdx-l1stream pricing [--date YYYYMMDD] [options]\n");
-    printf("  tdx-l1stream newbond [options]\n\n");
+    printf("  tdx-l1stream newbond [options]\n");
+    printf("  tdx-l1stream professional --input PATH [--kind stock|market|board]\n"
+           "                            [--field N] [--from YYYYMMDD] [--to YYYYMMDD]\n\n");
     printf("Universe:\n");
     printf("  --security CODE      repeatable, e.g. sz000001 or 600000\n");
     printf("  --market LIST        comma separated sz,sh,bj (default sz,sh,bj)\n");
@@ -226,6 +231,13 @@ typedef struct cli_options {
     int bonds;
     int convertible;
     int schedule;
+    /* professional: a local file, its kind, a field id and a date range.  The id cannot
+     * reuse --index, which already means "the security is an index". */
+    const char *input;
+    const char *kind;
+    unsigned field_id;
+    int from_date;
+    int to_date;
 } cli_options;
 
 static void options_init(cli_options *options) {
@@ -544,6 +556,31 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
             options->resource = value;
         } else if (strcmp(argument, "--prefix") == 0) {
             options->prefix = value;
+        } else if (strcmp(argument, "--input") == 0) {
+            options->input = value;
+        } else if (strcmp(argument, "--kind") == 0) {
+            options->kind = value;
+        } else if (strcmp(argument, "--field") == 0) {
+            const long parsed = strtol(value, NULL, 10);
+            if (parsed < 0 || parsed > 255) {
+                tdx_error_set(err, "--field must be in 0..255");
+                return TDX_ERR;
+            }
+            options->field_id = (unsigned)parsed;
+        } else if (strcmp(argument, "--from") == 0) {
+            const long parsed = strtol(value, NULL, 10);
+            if (parsed < 0 || parsed > 99991231) {
+                tdx_error_set(err, "--from must be YYYYMMDD");
+                return TDX_ERR;
+            }
+            options->from_date = (int)parsed;
+        } else if (strcmp(argument, "--to") == 0) {
+            const long parsed = strtol(value, NULL, 10);
+            if (parsed < 0 || parsed > 99991231) {
+                tdx_error_set(err, "--to must be YYYYMMDD");
+                return TDX_ERR;
+            }
+            options->to_date = (int)parsed;
         } else {
             tdx_error_set(err, "unknown option: %s", argument);
             return TDX_ERR;
@@ -3101,6 +3138,164 @@ close_output:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* professional                                                        */
+/* ------------------------------------------------------------------ */
+
+/* Reads one professional-data .dat from disk and reports what is in it.  There is no
+ * fetch here on purpose: the family is served over HTTPS, and adding TLS to this project
+ * would break the deployment property it states for itself, so the file arrives from
+ * outside and is parsed here - the same division the JSN resources already use. */
+static int command_professional(const cli_options *options, tdx_error *err) {
+    static tdx_buf raw;
+    static tdx_buf line;
+    tdx_professional_record *records = NULL;
+    tdx_professional_id_summary *fields = NULL;
+    size_t *indices = NULL;
+    FILE *input = NULL;
+    FILE *stream = NULL;
+    long length;
+    tdx_professional_kind kind = TDX_PROFESSIONAL_STOCK;
+    tdx_professional_selection selection;
+    size_t record_count = 0;
+    size_t field_count = 0;
+    size_t selected = 0;
+    size_t named = 0;
+    size_t unnamed = 0;
+    size_t first_date = 0;
+    size_t last_date = 0;
+    size_t index;
+    int status = TDX_ERR;
+
+    if (!options->input || !*options->input) {
+        tdx_error_set(err, "professional needs --input PATH");
+        return TDX_ERR;
+    }
+    if (options->kind && *options->kind &&
+        !tdx_professional_kind_parse(options->kind, strlen(options->kind), &kind)) {
+        tdx_error_set(err, "--kind must be stock, market or board");
+        return TDX_ERR;
+    }
+    tdx_buf_init(&raw);
+    tdx_buf_init(&line);
+    input = fopen(options->input, "rb");
+    if (!input) {
+        tdx_error_set(err, "cannot open %s", options->input);
+        goto done;
+    }
+    if (fseek(input, 0, SEEK_END) != 0 || (length = ftell(input)) < 0 ||
+        fseek(input, 0, SEEK_SET) != 0) {
+        tdx_error_set(err, "cannot size %s", options->input);
+        goto done;
+    }
+    if (length > 0) {
+        if (tdx_buf_reserve(&raw, (size_t)length, err) != TDX_OK)
+            goto done;
+        if (fread(raw.data, 1, (size_t)length, input) != (size_t)length) {
+            tdx_error_set(err, "cannot read %s", options->input);
+            goto done;
+        }
+        raw.len = (size_t)length;
+    }
+    fclose(input);
+    input = NULL;
+
+    records = (tdx_professional_record *)calloc(TDX_PROFESSIONAL_RECORDS_MAX, sizeof(*records));
+    fields = (tdx_professional_id_summary *)calloc(256, sizeof(*fields));
+    indices = (size_t *)calloc(TDX_PROFESSIONAL_RECORDS_MAX, sizeof(*indices));
+    if (!records || !fields || !indices) {
+        tdx_error_set(err, "out of memory for the professional-data buffers");
+        goto done;
+    }
+    if (tdx_professional_parse_trading(raw.data, raw.len, records, TDX_PROFESSIONAL_RECORDS_MAX,
+                                       &record_count, err) != TDX_OK)
+        goto done;
+    if (tdx_professional_summarize(records, record_count, kind, fields, 256, &field_count,
+                                   err) != TDX_OK)
+        goto done;
+
+    selection.id = options->field_id;
+    selection.from = (uint32_t)(options->from_date > 0 ? options->from_date : 0);
+    selection.to = (uint32_t)(options->to_date > 0 ? options->to_date : 0);
+    if (tdx_professional_select(records, record_count, &selection, indices,
+                                TDX_PROFESSIONAL_RECORDS_MAX, &selected, err) != TDX_OK)
+        goto done;
+
+    for (index = 0; index < field_count; ++index) {
+        if (fields[index].name)
+            named++;
+        else
+            unnamed++;
+        if (fields[index].first_date) {
+            if (first_date == 0 || fields[index].first_date < first_date)
+                first_date = fields[index].first_date;
+            if (fields[index].last_date > last_date)
+                last_date = fields[index].last_date;
+        }
+    }
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    tdx_buf_clear(&line);
+    if (tdx_professional_format_document(&line, options->input, kind, raw.len, record_count,
+                                         field_count, named, unnamed, selected, first_date,
+                                         last_date, err) != TDX_OK)
+        goto done;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+        goto done;
+    if (fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the professional document");
+        goto done;
+    }
+    for (index = 0; index < field_count; ++index) {
+        tdx_buf_clear(&line);
+        if (tdx_professional_format_summary(&line, &fields[index], kind, err) != TDX_OK)
+            goto done;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto done;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the professional fields");
+            goto done;
+        }
+    }
+    for (index = 0; index < selected; ++index) {
+        const tdx_professional_record *record = &records[indices[index]];
+        tdx_buf_clear(&line);
+        if (tdx_professional_format_record(&line, record,
+                                           tdx_professional_field_name(kind, record->id),
+                                           indices[index], err) != TDX_OK)
+            goto done;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK)
+            goto done;
+        if (fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the professional records");
+            goto done;
+        }
+    }
+    status = TDX_OK;
+    if (!options->quiet)
+        fprintf(stderr,
+                "professional %s: %zu bytes, %zu records, %zu fields (%zu named, %zu unnamed), "
+                "%zu selected\n",
+                options->input, raw.len, record_count, field_count, named, unnamed, selected);
+
+done:
+    if (input)
+        fclose(input);
+    if (stream && options->output)
+        fclose(stream);
+    free(records);
+    free(fields);
+    free(indices);
+    tdx_buf_free(&raw);
+    tdx_buf_free(&line);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -3219,6 +3414,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "newbond") == 0) {
         if (command_newbond(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "professional") == 0) {
+        if (command_professional(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

@@ -66,6 +66,8 @@ c/
     tdx_pricing_json.h     定价行的 JSONL 渲染
     tdx_newbond.h          新债投影映射与对账
     tdx_newbond_json.h     投影行与对账的 JSONL 渲染
+    tdx_professional.h     professional_data .dat 解析与字段表
+    tdx_professional_json.h 该族的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -84,6 +86,7 @@ c/
     tdx_convertible_join.c  tdx_pending.c  tdx_pending_json.c
     tdx_subscription.c  tdx_subscription_json.c  tdx_bond_math.c
     tdx_pricing.c  tdx_pricing_json.c  tdx_newbond.c  tdx_newbond_json.c
+    tdx_professional.c  tdx_professional_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -107,6 +110,7 @@ c/
     test_pricing.c   pricing_fixtures.h (generated, three shapes)
     test_newbond.c   (shares subscription_fixtures.h, which now also carries the
                       projection whole and the subscriptions it names)
+    test_professional.c  professional_fixtures.h (generated, real .dat prefixes)
 ```
 
 ## 构建
@@ -125,7 +129,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-28/28 测试通过、0 warning。
+29/29 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -249,6 +253,11 @@ tdx-l1stream pricing --root C:\new_tdx `
 # 新债投影与申购列表对账
 tdx-l1stream newbond --root C:\new_tdx `
                      --output output\newbond.jsonl
+
+# 解析一个本地 professional_data .dat（不联网，文件由外部取回）
+tdx-l1stream professional --input gpsz000001.dat --kind stock `
+                        --field 3 --from 20240101 --to 20241231 `
+                        --output output\professional.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -1438,6 +1447,71 @@ SH605589 / SZ000422 / SZ002997）。若把它们当成同一份数据的不同�
 
 证据：`output/newbond_verification_evidence.txt`。
 
+## 公开数据族：professional_data（`professional`）
+
+一族的公开统计/基本面数据，**已交付解析半边**。三张字段表：**44 个个股 + 42 个市场 +
+15 个板块**（股东人数、龙虎榜、融资融券、大宗交易、陆股通、涨停板封单、市值、股息率、
+质押、回购、期指净持仓、板块市盈率……）。
+
+```
+tdxgp/gpszsh.txt              清单：<文件名>,<md5>,<字节数>
+tdxgp/gp<市场><代码>.dat       个股，例如 gpsz000001.dat
+tdxgp/gpsh999999.dat          市场级
+tdxgp/gpsh880471.dat          板块级
+```
+
+### 交易文件格式（记录是定长的 13 字节，无文件头）
+
+| 偏移 | 类型 | 含义 |
+|---:|---|---|
+| 0 | `u8` | 字段 id |
+| 1 | `u32` | 日期 YYYYMMDD（小端）；**0 表示"无日期"** |
+| 5 | `f32` | 第一个值 |
+| 9 | `f32` | 第二个值 |
+
+**记录尺寸是被测出来的，不是猜的**：清单里 **8,647 个条目的字节数全部能被 13 整除**
+（余数集合只有 `{0}`），其中三条正好 **13 字节**（一条记录）。这是发布方自己给的
+8,647 个独立尺寸，比三个本机样本强得多。
+
+### 字段表覆盖：有一批 id 没有名字
+
+| 样本 | 记录 | 字段 | 有名字 | 无名字 | 表大小 |
+|---|---:|---:|---:|---:|---:|
+| 个股 `gpsz000001` | 30,569 | 46 | 41 | **5** | 44 |
+| 市场 `gpsh999999` | 88,918 | 46 | 42 | **4** | 42 |
+| 板块 `gpsh880471` | 29,748 | 15 | **15** | 0 | 15 |
+
+超出的 id 是个股的 `45/47/48/49/50` 与市场的 `43/44/45/99`。处理方式**照参考实现返回空名字**，
+本移植渲染成 `"name":null` 并同时给出 `named:false` 与文档级 `fields_unnamed` 计数。
+**给未公布的 id 编一个名字，是唯一比承认不知道更糟的做法。**
+
+### 验证
+
+| 检验 | 结果 |
+|---|---|
+| 清单尺寸 × 13 字节记录 | **8,647/8,647 全部整除** |
+| 现取文件端到端 | md5 与清单一致 ✓、大小一致 ✓、解析出 **27,903 条 / 46 字段**、日期到 20260924 |
+| 三个本机样本 | 余数全 0，记录 30,569 / 88,918 / 29,748 |
+| 筛选（字段 3 + 2024 全年） | **242 条**，日期区间**两端含**，名字来自字段表 |
+
+**一处不匹配要正确解读**：本机缓存的 `gpsz000001.dat` 是 397,397 字节，今日清单是 362,739 字节
+——**文件会每日更新**。拿旧缓存的 md5 比今日清单，比的不是"解码对不对"，而是"文件换了没有"。
+
+### 两处比参考实现更严（有意为之）
+
+- 参考只检查 `day <= 31`，于是 **20260231 会被接受**。本移植按**真实日历**校验（含闰年 2 月 29 日）：
+  拒绝 2 月 31 日，但**接受**真实的闰日——把真实数据拒掉比放过一个不可能的日期更糟。
+- 长度不是 13 的整数倍时**直接报错**，而不是忽略尾部残余：定长记录流一旦错位就是解码失败。
+
+### 故意不做的部分
+
+- **HTTPS 取数**：该族走 `https://data.tdx.com.cn/`，要在 `c/` 引入 TLS，而本项目明确声明
+  "部署就是单个 exe + zlib"。因此保持**"外部取回、本实现解析"**，与 JSN 资源走既有传输层一致。
+- **财务半边**：`tdxfin/gpcw.txt` 的季度 ZIP 包（147 个季度，最大 5.7 MB）尚未移植，需要 ZIP 解析。
+
+证据：`output/professional_verification_evidence.txt`、`output/professional_manifest_evidence.txt`、
+`output/professional_data_reconnaissance.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1648,6 +1722,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_bond_math` | **日序数与 Python datetime 对照**（含闰日、整百年、跨年、带连字符）、日期非法/短/空/NULL 的拒绝、CSV 文本与数值解析（跳过非数字与空项、容量不足截断）、应计利息取**第一项**利率与付息日当天为 0、期外拒绝、**最后一笔同时偿还面值**（103 而非 3）、现金流按时间升序、**单笔现金流的闭式解**、**贴现回代的不动点**、利率 ≤ −100%、空现金流、零/负价格、**区间夹不住的价格**的拒绝 |
 | `test_pricing` | **43 列**真实抓包按"每种形态取第一只"选取的三行（普通转债 / 仅剩一期 / 可交换债）、触发价 = 转股价 × 比例、票息表数组化、**应计利息与全价在抓包窗口上的精确取值**、转股价值与溢价率、**到期收益率为负时符号正确**（防后人"修"它）、报价**现价优先/昨收兜底**且来源随价格输出、无报价时退化为 terms-only 而条款仍在、只有正股报价时转股价值**仍然有值**（它不需要债券价）、**>10 倍面值被标注 price_plausible 而数字仍保留**、738 元真实高价**不被误标**、容量不足的拒绝、渲染括号平衡 |
 | `test_newbond` | 日期压缩（带星期/带连字符/已紧凑/非八位/空/NULL）、**20 列**投影抓包的映射（代码 + 标的 + 原始与压缩日期并存）、**13/13 按代码匹配而 0 处日期不一致**（去掉压缩立刻变 13，断言期望 0）、**2 处规模不一致且较大者为 9.80 亿**、合成用例覆盖"同代码多行由标的择优"与"代码无果才兜底"、未匹配行的代码上报、完全一致时为 exact、**每一行都断言语义一致性**（匹配到的申购行标的 == 投影标的）、全部 13 行渲染括号平衡 |
+| `test_professional` | 三张字段表的大小与**表外 id 返回空名字**、**真实 .dat 前缀**（个股 + 板块）逐字节解析并断言取值（含 f32 位精确比对）、**长度非 13 倍数 / 2 月 31 日 / 月 13 一律拒绝**而真实闰日接受、无日期记录在区间内被排除但不带区间时保留、筛选（按 id、含两端、单边界、无匹配、容量不足）、**未命名 id 渲染 `name:null`**、非有限值渲染 `null`、渲染括号平衡 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1685,17 +1760,10 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ### 本轮清单对照发现的遗漏（在范围内，尚未移植）
 
-11. **公开数据族 `professional_data`**（参考 `protocol/professional_data_*`，8 个文件）：
-    三张字段表共 **44 个个股字段 + 42 个市场字段 + 19 个板块字段**（股东人数、龙虎榜、
-    融资融券、大宗交易、陆股通、涨停板、市值、股息率、解禁、回购……）。
-    走 **HTTPS**（`data.tdx.com.cn`）而非 7709：清单是逗号分隔的
-    `<文件名>,<md5>,<字节数>`，个股文件 `gp<市场><代码>.dat`，市场文件 `gpsh999999.dat`。
-    **已确认可用材料**：本机已有参考实现跑出的真实缓存样本（
-    `gpsz000001.dat` / `gpsh999999.dat` / `gpsh880471.dat`），清单也可直连（HTTP 200）。
-    计划分两步：**解析半边**（.dat + 字段表 + 按 id/日期的记录选择，可离线、有真实 fixture）
-    先做；**HTTPS 取数半边**需要在 `c/` 引入 TLS，会打破"部署就是单个 exe + zlib"
-    这一条明确的项目属性，因此先改为"外部取回、本实现解析"。
-    侦察细节见 `output/professional_data_reconnaissance.txt`。
+11. **`professional_data` 的两处延伸**：① 财务半边（`tdxfin/gpcw.txt` 的季度 ZIP 包，
+    147 个季度，最大 5.7 MB）需要 ZIP 解析，尚未移植；② HTTPS 取数需要 TLS，
+    会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
+    已交付的部分见"公开数据族"一节。
 
 ### 性能：已测量，无余量
 
