@@ -110,6 +110,7 @@ static void usage(void) {
     printf("  tdx-l1stream securities [--market sz,sh,bj] [options]\n");
     printf("  tdx-l1stream sweep [--market sz,sh,bj] [-j N] [options]\n");
     printf("  tdx-l1stream watch [--market sz,sh,bj] [-j N] [options]\n");
+    printf("  tdx-l1stream serve [--port N] [options]\n");
     printf("  tdx-l1stream day --security CODE --date YYYYMMDD [options]\n");
     printf("  tdx-l1stream daily --security CODE [--root DIR] [--input PATH]\n                        [--max-records N] [options]\n");
     printf("  tdx-l1stream trades --security CODE [--date YYYYMMDD] [options]\n");
@@ -120,6 +121,17 @@ static void usage(void) {
     printf("  tdx-l1stream finance --security CODE [--security CODE ...] [options]\n");
     printf("  tdx-l1stream capital --security CODE [--security CODE ...] [options]\n");
     printf("  tdx-l1stream limits [--start N] [options]\n");
+    printf("  tdx-l1stream limit [--security CODE] [--prev PRICE] [--name NAME]\n"
+           "                      [--date YYYYMMDD] [options]\n");
+    printf("  tdx-l1stream seal --security CODE [--date YYYYMMDD] [options]\n");
+    printf("  tdx-l1stream ranking [--category NAME] [--sort KEY] [--start N]\n"
+           "                       [--limit N] [--ascending] [options]\n");
+    printf("  tdx-l1stream minute --security CODE [--root DIR] [--input PATH]\n"
+           "                      [--max-records N] [options]\n");
+    printf("  tdx-l1stream blocks [--members] [--assignments] [--root DIR] [options]\n");
+    printf("  tdx-l1stream industry [--max-records N] [options]\n");
+    printf("  tdx-l1stream valuation [--security INDEX] [--max-records N] [options]\n");
+    printf("  tdx-l1stream panorama [--view ID] [--max-records N] [options]\n");
     printf("  tdx-l1stream jsn --resource PATH [options]\n");
     printf("  tdx-l1stream convertible [options]\n");
     printf("  tdx-l1stream pending [options]\n");
@@ -187,6 +199,31 @@ static void usage(void) {
     printf("  --start N            row to resume from, default 0\n");
     printf("  --max-records N      cap how many rows the walk takes, default %u\n\n",
            (unsigned)TDX_LIMITS_MAX_RECORDS);
+    printf("limit:\n");
+    printf("  --security CODE      the security to compute limits for\n");
+    printf("  --prev PRICE         the previous close, which the rules need\n");
+    printf("  --name NAME          the name, used only to recognise special treatment\n");
+    printf("  --date YYYYMMDD      the as-of date for the rule switch\n");
+    printf("seal:\n");
+    printf("  --security CODE      one security, from its 0x0547 depth\n");
+    printf("  --date YYYYMMDD      the as-of date for the limit rules\n");
+    printf("ranking:\n");
+    printf("  --category NAME      a name like a-shares, or a number, default a_share\n");
+    printf("  --sort KEY           change-pct, amount, seal-amount, ..., or a number\n");
+    printf("  --start N            first row\n");
+    printf("  --limit N            rows to fetch, paged 80 at a time, default 80\n");
+    printf("  --ascending          ascending instead of the default descending\n");
+    printf("minute:\n");
+    printf("  --input PATH         a .lc1 file to read; otherwise --security under --root\n");
+    printf("  --max-records N      cap how many bars are emitted\n");
+    printf("blocks:\n");
+    printf("  --members            also emit every block membership\n");
+    printf("  --assignments        also emit every security's industry assignment\n");
+    printf("  --root PATH          TDX installation root; the three cache files come from it\n");
+    printf("industry / valuation / panorama:\n");
+    printf("  --security INDEX     valuation: also fetch that index's PE/PB history\n");
+    printf("  --view ID            panorama: a view id, or catalog (the default) to list\n");
+    printf("  --max-records N      cap how many rows are emitted\n");
     printf("jsn:\n");
     printf("  --resource PATH      resource under the prefix, e.g. list/zq_aaa201.jsn\n");
     printf("  --prefix NAME        resource prefix, default bi\n");
