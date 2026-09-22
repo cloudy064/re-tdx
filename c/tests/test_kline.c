@@ -27,6 +27,7 @@
  * the same day's zst_cache image reports 05=16.790000 06=17.490000 07=16.730000
  * 08=17.390000 10=16826061. */
 #include "kline_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -424,6 +425,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the bar object must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"kline\"") != NULL, "the bar type");
     CHECK(strstr(text, "\"security_id\":\"SZ000623\"") != NULL, "the identity");
     CHECK(strstr(text, "\"period\":\"day\"") != NULL, "the period");
@@ -441,6 +448,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(text[line.len - 1] == '}', "the summary must end with '}'");
     CHECK(strstr(text, "\"type\":\"kline_summary\"") != NULL, "the summary type");
     CHECK(strstr(text, "\"bar_count\":6") != NULL, "the bar count");
@@ -459,6 +472,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "an empty summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"first_date\":null") != NULL, "missing dates render null");
     CHECK(strstr(text, "\"high\":null") != NULL, "an empty envelope renders null");
     CHECK(strstr(text, "\"endpoint\":null") != NULL, "a missing endpoint renders null");

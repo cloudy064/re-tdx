@@ -13,6 +13,7 @@
 
 #include "tdx_trades.h"
 #include "tdx_trades_json.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -455,6 +456,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the tick object must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"trade\"") != NULL, "the tick type");
     CHECK(strstr(text, "\"security_id\":\"SZ000623\"") != NULL, "the identity");
     CHECK(strstr(text, "\"trading_date\":\"20260612\"") != NULL, "the date");
@@ -470,6 +477,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the summary object must be balanced (length %zu)", line.len);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(text[0] == '{' && text[line.len - 1] == '}', "the summary must end with '}': ...%s",
           line.len > 20 ? text + line.len - 20 : text);
     CHECK(strstr(text, "\"type\":\"trade_summary\"") != NULL, "the summary type");
@@ -495,6 +508,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "an empty summary must still be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"trading_date\":null") != NULL, "a missing date renders null");
     CHECK(strstr(text, "\"first_time\":null") != NULL, "missing times render null");
     CHECK(strstr(text, "\"vwap\":null") != NULL, "a zero-volume vwap renders null");

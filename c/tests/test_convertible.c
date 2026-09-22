@@ -21,6 +21,7 @@
 #include "tdx_convertible_json.h"
 #include "tdx_jsn.h"
 #include "convertible_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -275,6 +276,13 @@ static void test_rendering(void) {
          * opened the overview object and never closed it. */
         CHECK(depth == 0 && !in_string, "the rendered row is balanced, depth %d in_string %d",
               depth, in_string);
+    {
+        /* Balanced is not the same as parseable: this assertion is what caught a Windows
+         * path reaching the JSON through a raw %s, and a CRC printed without quotes. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
         CHECK(strstr(text, "\"security_id\":\"SH110075\"") != NULL, "the bond identity renders");
         CHECK(strstr(text, "\"instrument_type\":\"convertible-bond\"") != NULL,
               "the instrument type renders");

@@ -30,6 +30,7 @@
 #include "tdx_pricing_json.h"
 #include "tdx_jsn.h"
 #include "pricing_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -377,6 +378,13 @@ static void test_rendering(void) {
     }
     CHECK(depth == 0 && !in_string, "the pricing row is balanced, depth %d in_string %d", depth,
           in_string);
+    {
+        /* Balanced is not the same as parseable: this assertion is what caught a Windows
+         * path reaching the JSON through a raw %s, and a CRC printed without quotes. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"convertible_bond_pricing\"") != NULL, "the type");
     CHECK(strstr(text, "\"instrument_type\":\"convertible-bond\"") != NULL, "the kind");
     CHECK(strstr(text, "\"active\":true") != NULL, "the active flag");

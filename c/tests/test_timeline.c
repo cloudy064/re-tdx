@@ -11,6 +11,7 @@
 #include "tdx_timeline.h"
 #include "tdx_timeline_json.h"
 #include "timeline_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -240,6 +241,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the point object must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"minute_point\"") != NULL, "the point type");
     CHECK(strstr(text, "\"security_id\":\"SZ000623\"") != NULL, "the identity");
     CHECK(strstr(text, "\"time\":\"09:31\"") != NULL, "the first label");
@@ -253,6 +260,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(text[line.len - 1] == '}', "the summary must end with '}'");
     CHECK(strstr(text, "\"type\":\"timeline_summary\"") != NULL, "the summary type");
     CHECK(strstr(text, "\"point_count\":240") != NULL, "the point count");
@@ -269,6 +282,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "an empty summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"first_time\":null") != NULL, "missing times render null");
     CHECK(strstr(text, "\"endpoint\":null") != NULL, "a missing endpoint renders null");
     CHECK(strstr(text, "\"point_count\":0") != NULL, "a zero point count");

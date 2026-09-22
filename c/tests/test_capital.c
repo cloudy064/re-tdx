@@ -18,6 +18,7 @@
 #include "tdx_capital.h"
 #include "tdx_capital_json.h"
 #include "capital_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -342,6 +343,12 @@ static void test_json_rendering(void) {
             memcpy(text, line.data, copy);
             text[copy] = '\0';
             CHECK(braces_balanced(text), "the dividend object must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
             CHECK(strstr(text, "\"type\":\"capital_change\"") != NULL, "the type");
             CHECK(strstr(text, "\"security_id\":\"SZ000001\"") != NULL, "the identity");
             CHECK(strstr(text, "\"date\":\"2024-06-14\"") != NULL, "the date renders");
@@ -361,6 +368,12 @@ static void test_json_rendering(void) {
             memcpy(text, line.data, copy);
             text[copy] = '\0';
             CHECK(braces_balanced(text), "the share object must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
             CHECK(strstr(text, "\"before_circulating_shares\":") != NULL, "the share block");
             CHECK(strstr(text, "\"after_total_shares\":") != NULL, "the after shares");
             CHECK(strstr(text, "\"float32_values\":[") != NULL, "both readings travel");
@@ -390,6 +403,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"capital_summary\"") != NULL, "the summary type");
     CHECK(strstr(text, "\"category_counts\":{") != NULL, "the category histogram");
     CHECK(strstr(text, "\"ex_rights_dividend\":66") != NULL, "the accumulated category count");
@@ -403,6 +422,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "an empty summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"endpoint\":null") != NULL, "a missing endpoint renders null");
     CHECK(strstr(text, "\"record_count\":0") != NULL, "a zero record count");
     CHECK(strstr(text, "\"earliest_date\":null") != NULL, "no dates renders null");

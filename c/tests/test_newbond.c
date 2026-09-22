@@ -28,6 +28,7 @@
 #include "tdx_subscription.h"
 #include "tdx_jsn.h"
 #include "subscription_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -414,6 +415,13 @@ static void test_rendering(void) {
         }
         CHECK(depth == 0 && !in_string, "row %zu is balanced, depth %d in_string %d", index,
               depth, in_string);
+    {
+        /* Balanced is not the same as parseable: this assertion is what caught a Windows
+         * path reaching the JSON through a raw %s, and a CRC printed without quotes. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     }
     tdx_buf_clear(&line);
     CHECK(tdx_newbond_format_row(&line, &projections[0], &report.matches[0], 0, &error) == TDX_OK,

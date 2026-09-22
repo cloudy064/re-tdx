@@ -23,6 +23,7 @@
 #include "tdx_professional.h"
 #include "tdx_professional_json.h"
 #include "professional_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -378,6 +379,13 @@ static void test_rendering(void) {
     }
     CHECK(depth == 0 && !in_string, "the record is balanced, depth %d in_string %d", depth,
           in_string);
+    {
+        /* Balanced is not the same as parseable: this assertion is what caught a Windows
+         * path reaching the JSON through a raw %s, and a CRC printed without quotes. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"professional_record\"") != NULL, "the type");
     CHECK(strstr(text, "\"id\":1,") != NULL, "the field id");
     CHECK(strstr(text, "\"date\":19971231") != NULL, "the date");

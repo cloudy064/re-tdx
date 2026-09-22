@@ -21,6 +21,7 @@
 #include "tdx_finance.h"
 #include "tdx_finance_json.h"
 #include "finance_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -283,6 +284,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the finance object must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"finance\"") != NULL, "the type");
     CHECK(strstr(text, "\"security_id\":\"SH600000\"") != NULL, "the identity");
     CHECK(strstr(text, "\"listing_date\":\"1999-11-10\"") != NULL, "the listing date renders");
@@ -312,6 +319,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"finance_summary\"") != NULL, "the summary type");
     CHECK(strstr(text, "\"record_count\":12") != NULL, "the accumulated record count");
     CHECK(strstr(text, "\"records_with_listing_date\":12") != NULL, "the accumulated listing");
@@ -324,6 +337,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "an empty summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"endpoint\":null") != NULL, "a missing endpoint renders null");
     CHECK(strstr(text, "\"record_count\":0") != NULL, "a zero record count");
 

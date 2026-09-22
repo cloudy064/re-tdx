@@ -27,6 +27,7 @@
 #include "tdx_jsn.h"
 #include "convertible_fixtures.h"
 #include "tdx_bonds_json.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -385,6 +386,13 @@ static void test_rendering(void) {
     }
     CHECK(depth == 0 && !in_string, "the joined row is balanced, depth %d in_string %d", depth,
           in_string);
+    {
+        /* Balanced is not the same as parseable: this assertion is what caught a Windows
+         * path reaching the JSON through a raw %s, and a CRC printed without quotes. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"progress\":{") != NULL, "the progress group renders");
     CHECK(strstr(text, "\"coupons\":{") != NULL, "the coupon group renders");
     CHECK(strstr(text, "\"rates_pct\":[") != NULL, "the six rates render as an array");

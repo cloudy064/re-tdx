@@ -23,6 +23,7 @@
 #include "tdx_bonds_json.h"
 #include "tdx_jsn.h"
 #include "jsn_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -446,6 +447,13 @@ static void test_rendering(void) {
             }
         }
         CHECK(depth == 0 && !in_string, "the rendered row is balanced, depth %d", depth);
+    {
+        /* Balanced is not the same as parseable: this assertion is what caught a Windows
+         * path reaching the JSON through a raw %s, and a CRC printed without quotes. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
         CHECK(strstr(text, "\"security_id\":\"SH020820\"") != NULL, "the identity renders");
         CHECK(strstr(text, "\"scale\":\"issue-size-yuan\"") != NULL, "the scale renders");
         CHECK(strstr(text, "\"face_value_yuan\":100.000000") != NULL, "the face value renders");

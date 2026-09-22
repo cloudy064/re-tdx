@@ -1551,6 +1551,31 @@ tdxgp/gpsh880471.dat          板块级
 证据：`output/professional_verification_evidence.txt`、`output/professional_manifest_evidence.txt`、
 `output/professional_finance_evidence.txt`、`output/professional_data_reconnaissance.txt`。
 
+## 参考实现模块的范围判定（`market/` 等）
+
+上一轮靠模块清单发现了 `professional_data`，但只处理了那一族。这一轮把 `market/` 与
+`protocol/` 下其余模块**逐个按公开 API 判定**是否属于本项目声明的 L1 范围
+（"只需要 L1 那一小块"），而不是按目录或文件数判断。
+
+| 参考模块 | 内容 | 判定 |
+|---|---|---|
+| `market/daily.cpp` | 本地 `.day` 日线（32 字节记录） | **在范围内，待做** |
+| `market/minute.cpp`、`local_kline.cpp`、`minute_download*.cpp` | 本地分钟线（`.lc1`/`.lc5`） | **在范围内，待做** |
+| `market/hyzt.cpp` | 行业估值 JSN ← `command_hyzt_extract` | **在范围内，待做** |
+| `market/panorama.cpp` | 全景 JSN 查询 | **在范围内，待做** |
+| `market/ranking.cpp` | 分类行情/排名（走 7709 传输） | **在范围内，待做** |
+| `market/seal_order.cpp` | 涨跌停规则 + 封单 | **在范围内，待做** |
+| `market/valuation.cpp` | 估值 JSN 查询 | **在范围内，待做** |
+| `market/level2_*.cpp`（约 50 个） | L2 SDK / tpbus | 范围外：需授权业务事件 |
+| `protocol/professional_data_*` | 公开数据族 | **已交付**（交易 + 财务两半） |
+| `research/`、`formula/`、`cloud/`、`trading/`、`recon/`、`institution/`、`funds/`、`industry/` 等 | 研究/机构/云/交易/扫描类工具 | 范围外：不是 L1 行情流的一部分 |
+
+判定后的第一顺位是 **`market/daily.cpp`**：它小、可**完全离线验证**（本机 `vipdoc/` 里就是
+真实的 `.day` 文件），而且第 7 轮测量除数表时**已经撞上它的致命细节**——
+`.day` 的价格口径**股票是 /100、债券是 /10000**（茅台 127588 → 1275.88 元；南航转债上市首日
+1102300 → 110.23 元）。这个差异如果不按品种处理，读出来的债券价格会差 100 倍，
+而"看起来仍然是数字"。所以它值得做，也值得用真实文件做 fixture。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1764,6 +1789,12 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_professional` | 三张字段表的大小与**表外 id 返回空名字**、**真实 .dat 前缀**（个股 + 板块）逐字节解析并断言取值（含 f32 位精确比对）、**长度非 13 倍数 / 2 月 31 日 / 月 13 一律拒绝**而真实闰日接受、无日期记录在区间内被排除但不带区间时保留、筛选（按 id、含两端、单边界、无匹配、容量不足）、**未命名 id 渲染 `name:null`**、非有限值渲染 `null`、渲染括号平衡 |
 | `test_professional_finance` | ZIP 由 **Python 的 zipfile 写、由本代码读**（stored 与 deflate 两条路径）、**破坏 CRC 必须被拒绝**、缺 EOCD 被拒绝、定长表头/索引/数据起点逐字段断言、**字段取值按 `index` 与 `index×2` 设计**使偏移错位必然暴露、越界字段为缺失而非 0、成员结构错误的四种拒绝、只命名两个字段、**渲染行必须能被项目自己的 JSON 解析器解析**（这条抓出了两个真 bug） |
 
+**每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
+而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
+`%s` 进 JSON 产生 `\U`（根本不是 JSON 转义），以及 CRC 以 `%08x` 裸输出使
+`"member_crc":9c4fb1bf` 无法解析（JSON 数字不能以字母开头）。两行的括号都是平衡的。
+现已覆盖**全部 15 个渲染测试**（8 个用内联括号计数、7 个用本地 `braces_balanced` 辅助）。
+
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
 `test_download` 完全不联网（传输链路的活体验证放在
@@ -1802,9 +1833,9 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
-    另一个未探的方向是 `market/` 目录下若干模块（`daily` / `hyzt` / `local_kline` /
-    `minute*` / `panorama` / `ranking` / `seal_order` / `valuation`），
-    是否属于 L1 范围尚未逐个判定。
+12. **`market/` 下若干在范围内的模块**：范围判定已完成（见"参考实现模块的范围判定"一节），
+    7 个模块待移植，第一顺位是 `daily`（本地 `.day`，可离线验证，且已测出
+    "股票 /100、债券 /10000"的口径差异）。
 
 ### 性能：已测量，无余量
 

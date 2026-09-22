@@ -11,6 +11,7 @@
 #include "tdx_auction.h"
 #include "tdx_auction_json.h"
 #include "auction_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -345,6 +346,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the point object must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"auction_point\"") != NULL, "the point type");
     CHECK(strstr(text, "\"security_id\":\"SZ000623\"") != NULL, "the identity");
     CHECK(strstr(text, "\"time\":\"09:15:00\"") != NULL, "the time label");
@@ -359,6 +366,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "the summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(text[line.len - 1] == '}', "the summary must end with '}'");
     CHECK(strstr(text, "\"type\":\"auction_summary\"") != NULL, "the summary type");
     CHECK(strstr(text, "\"point_count\":61") != NULL, "the point count");
@@ -378,6 +391,12 @@ static void test_json_rendering(void) {
     memcpy(text, line.data, copy);
     text[copy] = '\0';
     CHECK(braces_balanced(text), "an empty summary must be balanced: %s", text);
+    {
+        /* Balanced is not the same as parseable; the project's own parser decides. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"point_count\":0") != NULL, "a zero point count");
     CHECK(strstr(text, "\"has_points\":false") != NULL, "an absent segment is reported as absent");
 

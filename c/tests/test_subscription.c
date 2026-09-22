@@ -23,6 +23,7 @@
 #include "tdx_subscription_json.h"
 #include "tdx_jsn.h"
 #include "subscription_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -295,6 +296,13 @@ static void test_rendering(void) {
     }
     CHECK(depth == 0 && !in_string, "the subscription row is balanced, depth %d in_string %d",
           depth, in_string);
+    {
+        /* Balanced is not the same as parseable: this assertion is what caught a Windows
+         * path reaching the JSON through a raw %s, and a CRC printed without quotes. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"convertible_bond_subscription\"") != NULL, "the type");
     CHECK(strstr(text, "\"event_id\":\"convertible-subscription:1:110075:20201015\"") != NULL,
           "the event id");

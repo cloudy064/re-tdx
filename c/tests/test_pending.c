@@ -21,6 +21,7 @@
 #include "tdx_pending_json.h"
 #include "tdx_jsn.h"
 #include "pending_fixtures.h"
+#include "render_check.h"
 
 static int failures = 0;
 
@@ -332,6 +333,13 @@ static void test_rendering(void) {
     }
     CHECK(depth == 0 && !in_string, "the pending row is balanced, depth %d in_string %d", depth,
           in_string);
+    {
+        /* Balanced is not the same as parseable: this assertion is what caught a Windows
+         * path reaching the JSON through a raw %s, and a CRC printed without quotes. */
+        char reason[192];
+        CHECK(render_parses(text, reason, sizeof(reason)),
+              "and it parses as JSON: %s\n    %s", reason, text);
+    }
     CHECK(strstr(text, "\"type\":\"pending_convertible_bond\"") != NULL, "the type");
     CHECK(strstr(text, "\"security_id\":\"SH600300\"") != NULL, "the underlying identity");
     CHECK(strstr(text, "\"planned_size_100m_yuan\":7.000000") != NULL, "the planned size");
