@@ -57,6 +57,8 @@ c/
     tdx_convertible.h     可转债概览字段映射
     tdx_convertible_json.h 可转债行的 JSONL 渲染
     tdx_convertible_join.h 可转债六文档连接
+    tdx_pending.h          dfkzz201 待发计划表与集合对账
+    tdx_pending_json.h     待发行的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -72,7 +74,7 @@ c/
     tdx_gbbq.c  gbbq_cipher_state.h (generated)
     tdx_limits.c  tdx_limits_json.c  tdx_json.c  tdx_jsn.c
     tdx_bonds.c  tdx_bonds_json.c  tdx_convertible.c  tdx_convertible_json.c
-    tdx_convertible_join.c
+    tdx_convertible_join.c  tdx_pending.c  tdx_pending_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -90,6 +92,7 @@ c/
     test_bonds.c     (captured + synthetic cases, labelled)
     test_convertible.c  convertible_fixtures.h (generated, six reduced captures)
     test_convertible_join.c  (the same six fixtures, joined)
+    test_pending.c   pending_fixtures.h (generated, reduced capture)
 ```
 
 ## 构建
@@ -108,7 +111,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-23/23 测试通过、0 warning。
+24/24 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -216,6 +219,10 @@ tdx-l1stream jsn --resource list/kzz_kzzsy201_1.jsn --convertible `
 # 六份文档一次取回并连接（这才是参考实现的完整视图）
 tdx-l1stream convertible --root C:\new_tdx `
                        --output output\convertible-join.jsonl
+
+# 待发计划表 + 两份投影的集合对账
+tdx-l1stream pending --root C:\new_tdx `
+                     --output output\pending.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -1119,6 +1126,48 @@ SH110076 的回售是 `30/30`/70%、赎回是 `15/30`/130%、下修是 `15/30`/8
 
 证据：`output/convertible_join_evidence.txt`。
 
+## 待发可转债计划表（`pending`）
+
+已经公告、尚未上市的转债计划。**待发债券还没有自己的代码**，所以这一层的身份是它将要转股的
+**正股**——这也正是集合对账用的键。
+
+| 资源 | 角色 | 实测规模 |
+|---|---|---:|
+| `list/dfkzz201_1.jsn` | 主资源 | 18,597 字节 / 153 行 × 16 列 |
+| `list/func_kzz102_1.jsn` | 投影 A | 11,878 字节 / 145 行 × 9 列 |
+| `list/gxjty_zq_dfkzz102_1.jsn` | 投影 B | 20,607 字节 / 154 行 × 18 列 |
+
+### 这里的"投影"和上一节不是一回事
+
+参考实现对三份资源用**同一个映射**归一化，然后对每份投影报一份**集合对账**：哪些标的证券
+两边都有、哪些只在主资源、哪些只在投影。
+
+所以投影在这里回答的是**"另一份视图是否同意谁在筹划发行"**，而**不是**"该用哪个值填空"——
+后者是上一节换股投影回答的问题。两种机制不同，按同一种方式处理会产出没人要的报告。
+
+实测差异：**投影 B 是主资源的超集**（多 `SZ300495`，0 只只在主资源）；
+**投影 A 缺 9 只**（SH603339 / SH600456 / SH688210 / SZ300727 / SZ300491 / SZ300881 /
+SH605589 / SZ000422 / SZ002997）。若把它们当成同一份数据的不同副本，会漏掉那 9 只或凭空多出 1 只。
+
+### 两处与项目其他地方不同（有意的）
+
+- **列名是小写的**（`zzlx`/`mzgm`/`fadj`/`date0`/`byhq`/`zgj`/`gdpsl`/`sgrq`/`fxrq`/`zql`/`zqr`/`sgdm`/`sgmc`/`fxjg`），
+  这是项目里唯一一份小写列名的 JSN 资源。
+- **读不出来的行是跳过而不是报错**：这是一份"计划"，一行挂不到股票上就没有用；
+  而一只**已上市**债券认不出来，说明文档本身有问题（六文档连接那边就是直接报错）。
+  测试对两半都做了断言。
+
+### 验证
+
+| 检验 | 结果 |
+|---|---|
+| 抓包前三行的字段映射 | 类型/规模/进度/进度日期/转股价逐个断言，中文精确比对 |
+| `gdpsl` 列存在但为空 | 输出 `null` 而**不是 0**（这正是 `has_*` 的意义） |
+| 集合对账逻辑 | 用测试内构造的数组覆盖：完全相同（含顺序不同）、两侧各有差异、**重复身份**、**空身份**、空投影、两个空集 |
+| 153 行主资源 | 0 行被跳过 |
+
+证据：`output/pending_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1312,6 +1361,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_bonds` | 20 条 profile 的分类与前缀/斜杠写法、市场命名（含 44→bj 与未知市场的 `M<n>:`）、**抓包资源**的完整字段映射与中文精确比对、三种单位语义各自的换算与"不换算"、合并表/投影的身份列交换与标的、票息表配对与 `|值|≤1 乘 100` 规则、日期多于利率/空表/缓冲区不足（拒绝截断）、缺代码列/市场非数字的拒绝、渲染括号平衡 |
 | `test_convertible` | 可交换债判定（132 前缀，含截断码）、**55 列 × 3 行真实抓包**的字段映射、中文精确比对、`core_terms_complete` 判据、**ZGDM"要么空要么六位数字"的实测断言**、概览缺失列回到"缺失而非 0"、缺代码/市场非数字的拒绝、**渲染括号平衡**（该检查抓出了漏掉的 overview 右括号） |
 | `test_convertible_join` | 六份 fixture 的列数与源行数、**键并集为 3**（同一批债券在六份里，所以不是 18）与容量不足的拒绝、SH110076 六路全部命中、**三组触发条款取值必须互不相同**（一份文档读三遍会产出一模一样的触发条款）、票息列表条数 == 期数、只给一份文档/不给概览时仍能连接并把缺失报为缺失、**连接后渲染的括号平衡** |
+| `test_pending` | **16 列小写列名**的真实抓包前三行映射、两类中文取值精确比对、`gdpsl` 列存在但为空渲染为 `null` 而非 0、短代码/非数字市场**跳过并计数**（与上市视图"直接报错"相反）、容量不足的拒绝、集合对账的六种情形（顺序不同仍相等 / 两侧各有差异 / 重复身份折叠 / 空身份不算证券 / 空投影 / 两个空集）、渲染括号平衡 |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1320,9 +1370,9 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ## 尚未完成
 
-6. **可转债的待发/申购/定价三个视图**：六文档连接与换股替换/投影兜底已就位；
-   注册表里剩下的 `dfkzz201`（待发）、`func_kkzss101`（申购）、`gxjty_zq_kzzsy101`（定价）
-   尚未移植。
+6. **可转债的申购与定价两个视图**：六文档连接、换股替换/投影兜底、待发计划表与
+   集合对账都已就位；`func_kkzss101`（申购，含转股价值与溢价率的派生计算）与
+   `gxjty_zq_kzzsy101`（定价）尚未移植。
 7. **`0x0010` 里三个未标定的股本类别槽位**（national / promoter_legal_person / legal_person）：实测在工行、茅台身上给出不可能是股本的数值，需要另找消费者证据。
 
 1. **真服务端推送（B 方案）**：`FastHQ.Subscribe` 需要已登录的 tpbus/TaApi

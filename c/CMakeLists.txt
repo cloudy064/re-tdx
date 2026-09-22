@@ -61,6 +61,8 @@ add_library(tdxl1core STATIC
     src/tdx_convertible.c
     src/tdx_convertible_json.c
     src/tdx_convertible_join.c
+    src/tdx_pending.c
+    src/tdx_pending_json.c
 )
 target_include_directories(tdxl1core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -104,7 +106,7 @@ foreach(pair "frame:test_frame" "quote:test_quote" "directory:test_directory"
              "gbbq:test_gbbq" "limits:test_limits" "json:test_json" "jsn:test_jsn"
              "bonds:test_bonds"
              "convertible:test_convertible"
-             "convertible_join:test_convertible_join")
+             "convertible_join:test_convertible_join" "pending:test_pending")
     string(REPLACE ":" ";" parts "${pair}")
     list(GET parts 0 name)
     list(GET parts 1 source)
@@ -112,5 +114,6 @@ foreach(pair "frame:test_frame" "quote:test_quote" "directory:test_directory"
     target_link_libraries(tdx-l1stream-${name}-tests PRIVATE tdxl1core)
     add_test(NAME l1stream-${name} COMMAND tdx-l1stream-${name}-tests)
 endforeach()
+
 
 
