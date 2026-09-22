@@ -9,6 +9,7 @@
  *   daily       local .day daily bars for one security
  *   minute      local .lc1 one-minute bars for one security
  *   industry    the industry valuation resource, folded into industries
+ *   limit       the price-limit rules from hqrule.dat, and one security's limits
  *   trades      L1 trade details (minute resolution) for today or one date
  *   kline       multi-period K-lines (0x052D)
  *   timeline    today's intraday time-share series (0x0537)
@@ -49,6 +50,7 @@
 #include "tdx_finance_json.h"
 #include "tdx_gbbq.h"
 #include "tdx_industry.h"
+#include "tdx_limit.h"
 #include "tdx_industry_json.h"
 #include "tdx_jsn.h"
 #include "tdx_limits.h"
@@ -248,6 +250,9 @@ typedef struct cli_options {
     const char *input;
     const char *zip;
     const char *code;
+    const char *name;
+    double previous_close;
+    int has_previous_close;
     const char *kind;
     unsigned field_id;
     int from_date;
@@ -570,6 +575,11 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
             options->resource = value;
         } else if (strcmp(argument, "--prefix") == 0) {
             options->prefix = value;
+        } else if (strcmp(argument, "--name") == 0) {
+            options->name = value;
+        } else if (strcmp(argument, "--prev") == 0) {
+            options->previous_close = atof(value);
+            options->has_previous_close = 1;
         } else if (strcmp(argument, "--zip") == 0) {
             options->zip = value;
         } else if (strcmp(argument, "--code") == 0) {
@@ -3955,6 +3965,82 @@ done:
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* limit                                                               */
+/* ------------------------------------------------------------------ */
+
+/* The price-limit rules, and one security's limits under them.  With no --security it
+ * prints the rules the local hqrule.dat produced, which is the part a caller most needs to
+ * see: the switch dates decide whether special-treatment stocks are 5 or 10 per cent. */
+static int command_limit(const cli_options *options, tdx_error *err) {
+    static tdx_buf line;
+    tdx_limit_rules rules;
+    tdx_limit_prices prices;
+    FILE *stream = NULL;
+    int status = TDX_ERR;
+    int as_of = 0;
+
+    if (tdx_limit_rules_load(options->root, &rules, err) != TDX_OK)
+        return TDX_ERR;
+    if (options->date && *options->date)
+        as_of = atoi(options->date);
+    tdx_buf_init(&line);
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    tdx_buf_clear(&line);
+    if (tdx_buf_append_printf(&line, err,
+                              "{\"type\":\"limit_rules\",\"source\":\"%s\","
+                              "\"sz_st_10_date\":%d,\"sh_st_10_date\":%d,"
+                              "\"chinext_rate\":%.4f,\"star_rate\":%.4f,"
+                              "\"beijing_rate\":%.4f}",
+                              rules.source, rules.sz_st_10_date, rules.sh_st_10_date,
+                              rules.chinext_rate, rules.star_rate,
+                              rules.beijing_rate) != TDX_OK)
+        goto done;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+        fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the rules");
+        goto done;
+    }
+    if (options->security_count == 1) {
+        const tdx_code *security = &options->securities[0];
+        /* --prev is the previous close, which the rules need and a caller has to supply:
+         * nothing here can know it. */
+        if (!tdx_limit_calculate(security->market_id, security->code, options->name,
+                                 (double)options->previous_close, as_of, &rules, &prices)) {
+            tdx_error_set(err, "%s is not price limited", security->code);
+            goto done;
+        }
+        tdx_buf_clear(&line);
+        if (tdx_buf_append_printf(&line, err,
+                                  "{\"type\":\"limit_prices\",\"code\":\"%s\","
+                                  "\"market_id\":%d,\"security_class\":%d,"
+                                  "\"previous_close\":%.4f,\"rate\":%.4f,"
+                                  "\"upper\":%.4f,\"lower\":%.4f,\"source\":\"%s\"}",
+                                  security->code, security->market_id,
+                                  prices.security_class, (double)options->previous_close,
+                                  prices.rate, prices.upper, prices.lower,
+                                  prices.source) != TDX_OK)
+            goto done;
+        if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+            fwrite(line.data, 1, line.len, stream) != line.len) {
+            tdx_error_set(err, "cannot write the limits");
+            goto done;
+        }
+    }
+    status = TDX_OK;
+
+done:
+    if (stream && options->output)
+        fclose(stream);
+    tdx_buf_free(&line);
+    return status;
+}
+
 int main(int argc, char **argv) {
     tdx_error error;
     cli_options options;
@@ -4073,6 +4159,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "newbond") == 0) {
         if (command_newbond(&options, &error) != TDX_OK) {
+            fprintf(stderr, "error: %s\n", error.message);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "limit") == 0) {
+        if (command_limit(&options, &error) != TDX_OK) {
             fprintf(stderr, "error: %s\n", error.message);
             return 1;
         }

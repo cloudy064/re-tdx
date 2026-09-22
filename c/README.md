@@ -76,6 +76,7 @@ c/
     tdx_minute_json.h      分钟 bar 与汇总的 JSONL 渲染
     tdx_industry.h         行业估值资源（同资源内两种成员计数互证）
     tdx_industry_json.h    行业行与股票-行业行的 JSONL 渲染
+    tdx_limit.h            hqrule.dat 的涨跌停规则与限价计算
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -97,6 +98,7 @@ c/
     tdx_professional.c  tdx_professional_json.c
     tdx_professional_finance.c  tdx_zip.c  tdx_daily.c  tdx_daily_json.c
     tdx_minute.c  tdx_minute_json.c  tdx_industry.c  tdx_industry_json.c
+    tdx_limit.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -124,6 +126,7 @@ c/
     test_daily.c  daily_fixtures.h (generated, real .day prefixes)
     test_minute.c  minute_fixtures.h (generated, a real .lc1 violation window)
     test_industry.c  industry_fixtures.h (generated, whole industries)
+    test_limit.c (the real hqrule.dat, inline, and the rounding arithmetic)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
 ```
@@ -144,7 +147,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-33/33 测试通过、0 warning。
+34/34 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -198,6 +201,11 @@ tdx-l1stream minute --security sh600519 --root C:\new_tdx `
 
 # 行业估值：每个行业一行（--bonds 再附上每只股票的行）
 tdx-l1stream industry --output output\industry.jsonl
+
+# 涨跌停规则（读本机 hqrule.dat），以及一只股票的限价
+tdx-l1stream limit --root C:\new_tdx
+tdx-l1stream limit --root C:\new_tdx --security sz000001 --prev 11.70 `
+                   --date 20260922
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -1750,6 +1758,73 @@ tdxgp/gpsh880471.dat          板块级
 
 证据：`output/industry_verification_evidence.txt`。
 
+## 涨跌停价规则：`hqrule.dat`（`limit`）
+
+终端自己在 `T0002/hq_cache/hqrule.dat` 里放的规则（本机 **217 字节**）。费率按板块：
+主板 10%、创业板 300/301 与科创板 688/689 为 20%、北交所 920 为 30%，
+名字看起来像特别处理的另有一档——**但要看配置的切换日**。
+
+### 真实规则文件与参考实现的默认值不同（这是本节最有价值的一条）
+
+本机实测：**`SZST10Date=99991231`、`SHST10Date=99991231`**。切换日在未来 ⇒
+**5% 那一档不触发，ST 股仍是 10%**。而参考实现的默认值是 `0`——用默认值会让**每只 ST 股都变成 5%**。
+本实现读真实文件，所以不会。测试对同一只股票**两种规则各算一次**，把差别固定下来。
+
+### 取整是三步，且北交所方向相反
+
+```
+增量 = trunc(费率 × 前收 × 100 + 0.503) / 100
+涨停 = trunc((前收 + 增量)     × 100 + 0.503) / 100
+跌停 = trunc((1 - 费率) × 前收 × 100 + 0.503) / 100
+```
+
+**增量先取整到分、再相加**——不是一次乘法。偏置 `0.503` 让截断表现为四舍五入。
+中间结果**按 `float` 存储**（`store_float`）——这不是装饰：调用方拿它去比行情时必须与终端存的一致。
+
+**北交所用的是另一套**：偏置 `0.003`（上）与 `0.997`（下），即**截断**而非四舍五入。
+这是"另一个函数"，不是"同一个函数换个常数"。测试里两个取整在需要进位的值上**故意断言它们不相等**。
+
+### 对真实行情的验证（1,200 个交易日）
+
+涨跌停价是**硬天花板/地板**：真实数据里任何一天的最高价不得超过由前收算出的涨停价。
+样本：**30 只数据延续至今的证券 × 最近 40 个交易日 = 1,200 个交易日**。
+
+| 检验 | 结果 |
+|---|---|
+| 最高价突破涨停价 / 最低价跌破跌停价 | **1 例，且已查明**（见下） |
+| 最高价**恰好等于**涨停价（涨停日） | **35 天（2.9%）** |
+| 与**独立 Python 实现**逐值对照（同一套取整） | **30/30 一致** |
+
+**唯一那例是除权日，不是算错**：`sz000034` 于 20260519 前收 41.57、次日开盘 29.60（**−29% 跳空**）。
+29% 不是任何涨跌幅限制能产生的移动 ⇒ 交易所按**除权后参考价**计算涨跌停，
+而日线文件里的"前收"是**未除权**的。**这是前提不成立，不是取整错误**；
+而这也正是服务端 `0x0452` 特别限价表存在的原因——**它就是为这类日子提供官方价格的**。
+所以上面那句"从不被突破"应读作：**在常规交易日上从不被突破**。
+
+### 两次取样/容差的修正（都发生在验证过程中）
+
+- **容差**：最初用 `1e-6`，报出 11 处"违规"，但首例的最高价与涨停价**打印值相同**。
+  逐个量差值：最大超出 **1.221e-06**，**恰好等于 37.03 的 float 存储误差**
+  （实测 `abs(float(37.03) − 37.03)` 同为 1.221e-06）。真正的取整错误至少 **1e-02**——
+  **相差四个数量级**。容差改为 `1e-3`。
+- **取样**：第一版按文件名排序取前 200 只，于是**退市股**的"最近 41 条记录"落在 **2001 年**，
+  报出 9 处跌停价被跌破——那是当年 **PT 股**（无常规涨跌停）的真实成交。
+  **"最后 N 条记录"不等于"最近 N 个交易日"**，加了"最后日期必须在 2026-06-01 之后"的筛选后消失。
+  （与除数测量中"退市债没有报价"是**同一类陷阱**。）
+
+### 解析教训：不要把显示当成文件
+
+我最初用 `"[$_]"` 打印规则文件，**把方括号加到了每一行上**，于是按 `[key=value]` 写了 parser，
+**在一个明明有这些键的文件里什么也没找到**。真实格式是普通 INI：`[节名]` 段落头 + **裸 `key=value`**。
+读**字节**而不是读显示，才定下这件事。
+
+### 未做
+
+参考实现的**封单量/封单比**（`calculate_seal_order`：由买卖档位、成交单位、竞价不平衡量算封单金额与占比）
+尚未移植——它需要五档盘口与竞价不平衡量，属于另一片数据。
+
+证据：`output/limit_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1965,6 +2040,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_daily` | **四类除数**的口径函数（股票/基金/债券/逆回购/未知码）、真实 `.day` 前缀（股票 + 债券）逐字段断言、**同一份字节两种口径比值恰好 100**（这就是参考实现会犯的那个 100 倍错）、月份 13 / 2 月 31 日拒绝而**真实闰日接受**、**拒绝时错误消息必须带上测试写的日期**（防"通过但没测到"）、零价格**只计数不拒绝**、非 32 倍数与容量不足拒绝、四种市场路径定位与短缓冲拒绝、渲染可被项目自己的解析器解析 |
 | `test_minute` | 日期字解码（含**字 0 不是日期**、最小合法字 101）、真实 `.lc1` 普通窗口逐字段断言与**股票尾字为 0**、**真实违规窗口仍能解析且恰好计 1 条**（违规记录本身完整返回，计数不是修正）、分钟字 ≥ 1440 拒绝而 1439（23:59）接受、月份 0 拒绝**且错误消息带上测试写的字**、NaN 价格拒绝、容量不足拒绝、扩展市场主动拒绝、渲染可被项目自己的解析器解析 |
 | `test_industry` | **保留整行业的 fixture**（前缀会把行业切半，让"声明==实测"在 fixture 里失败而在真实文件上成立）、三个行业的两种计数**逐一对上**、**存在题材数 > 1 的行**（顿号计数去掉即失败）、负市盈率**按数字解析而非当作缺失**、缺码的行跳过并计数、**同类不一致记录而不拒绝**（合成行）、渲染可被项目自己的解析器解析、缺行业名渲染 null |
+| `test_limit` | **真实 hqrule.dat 的字节**（`[节名]` + 裸 `key=value`、注释、空行）、切换日 99991231 与默认值 0 的差别（**同一只 ST 股两种规则各算一次**）、三个板块的费率、**三步取整与 0.503 偏置**（需要进位的值上断言）、**北交所截断与主板四舍五入在同一个值上不相等**、非限价品种/无前收/`N` 开头新股的拒绝、规则表为 NULL 时回落到默认 |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -2010,9 +2086,10 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
-12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt` 已交付；
-    还剩 4 个可做——`panorama`、`ranking`、`seal_order`（涨跌停规则 + 封单）、
-    `valuation`，以及 `minute_download*`（分钟线的下载与展开）。
+12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt`、`seal_order` 的
+    **涨跌停规则半边**已交付；还剩——`panorama`、`ranking`、`valuation`、
+    `minute_download*`（分钟线的下载与展开），以及 `seal_order` 的**封单量/封单比**半边
+    （需要五档盘口与竞价不平衡量）。
 13. **板块层级展开**：`hyzt` 之上还有一层父子板块/成员并集/层级树，依赖
     `tdx/blocks.hpp` 与一路 cloud 数据源；**其范围归属尚未判定**。
 
