@@ -76,6 +76,8 @@ add_library(tdxl1core STATIC
     src/tdx_minute.c
     src/tdx_industry.c
     src/tdx_limit.c
+    src/tdx_valuation.c
+    src/tdx_valuation_json.c
     src/tdx_industry_json.c
     src/tdx_minute_json.c
     src/tdx_daily_json.c
@@ -125,7 +127,7 @@ foreach(pair "frame:test_frame" "quote:test_quote" "directory:test_directory"
              "bonds:test_bonds"
              "convertible:test_convertible"
              "convertible_join:test_convertible_join" "pending:test_pending" "subscription:test_subscription" "bond_math:test_bond_math" "pricing:test_pricing" "newbond:test_newbond" "professional:test_professional"
-             "professional_finance:test_professional_finance" "daily:test_daily" "minute:test_minute" "industry:test_industry" "limit:test_limit")
+             "professional_finance:test_professional_finance" "daily:test_daily" "minute:test_minute" "industry:test_industry" "limit:test_limit" "valuation:test_valuation")
     string(REPLACE ":" ";" parts "${pair}")
     list(GET parts 0 name)
     list(GET parts 1 source)

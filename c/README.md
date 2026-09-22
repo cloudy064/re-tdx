@@ -77,6 +77,8 @@ c/
     tdx_industry.h         行业估值资源（同资源内两种成员计数互证）
     tdx_industry_json.h    行业行与股票-行业行的 JSONL 渲染
     tdx_limit.h            hqrule.dat 的涨跌停规则与限价计算
+    tdx_valuation.h        指数估值：当前表 + PE/PB 历史合并
+    tdx_valuation_json.h   指数/历史点/合并报告/基金的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -98,7 +100,7 @@ c/
     tdx_professional.c  tdx_professional_json.c
     tdx_professional_finance.c  tdx_zip.c  tdx_daily.c  tdx_daily_json.c
     tdx_minute.c  tdx_minute_json.c  tdx_industry.c  tdx_industry_json.c
-    tdx_limit.c
+    tdx_limit.c  tdx_valuation.c  tdx_valuation_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -127,6 +129,7 @@ c/
     test_minute.c  minute_fixtures.h (generated, a real .lc1 violation window)
     test_industry.c  industry_fixtures.h (generated, whole industries)
     test_limit.c (the real hqrule.dat, inline, and the rounding arithmetic)
+    test_valuation.c  valuation_fixtures.h (generated, master whole)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
 ```
@@ -147,7 +150,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-34/34 测试通过、0 warning。
+35/35 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -206,6 +209,13 @@ tdx-l1stream industry --output output\industry.jsonl
 tdx-l1stream limit --root C:\new_tdx
 tdx-l1stream limit --root C:\new_tdx --security sz000001 --prev 11.70 `
                    --date 20260922
+
+# 指数估值：11 个指数的当前表
+tdx-l1stream valuation --output output\valuation.jsonl
+
+# 加上某个指数的 PE/PB 历史（按日期合并）与跟踪它的基金
+tdx-l1stream valuation --security sh000001 `
+                      --output output\valuation-000001.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -1825,6 +1835,61 @@ tdxgp/gpsh880471.dat          板块级
 
 证据：`output/limit_verification_evidence.txt`。
 
+## 指数估值：`valuation`
+
+四份资源，实测：
+
+| 资源 | 字节 | 行 | 内容 |
+|---|---:|---:|---|
+| `list/func_zsgz101_1.jsn` | 2,407 | 11 | 当前表：指数 + 指标 + 收益 |
+| `zsgz3/<detail>.jsn` | 101,898 | 3,093 | PE 历史 |
+| `zsgz4/<detail>.jsn` | 98,524 | 3,093 | PB 历史 |
+| `zsgz1/<detail>.jsn` | 497 | 6 | 跟踪该指数的基金 |
+
+明细资源的路径是**主表自己的 `$ZQDM` 列**给的，且与 `bi` 根之间**没有 `list/`**：
+`bi/zsgz3/000001.jsn`。逐一实测的主要指标：PE、PE 分位、PB、PB 分位、股息率、ROE、
+盈利收益率、**服务端自己的估值判断（文本）**、以及 5/10/20/30 日收益。
+
+### 两条历史按日期合并：**完全对齐**
+
+```
+points 3093，both_sides 3093，pe_only 0，pb_only 0，complete true
+```
+
+**3,093 个日期全部同时在两侧** ⇒ 这两份历史确实是**同一条序列**，而不是"行数相同所以大概对得上"。
+合并报告把这件事**说出来**而不是假设：哪些日期两侧都有、哪一侧多出日期，都计数并输出。
+测试另外用合成行覆盖了"只有一侧有"与"输入乱序"两种真实抓包不保证含有的情形。
+
+### 跨资源一致性：主表的当前值 == 历史的最后一点
+
+| 来源 | 日期 | PE | PB | PE 分位 | PB 分位 |
+|---|---|---|---|---:|---:|
+| 主表 | 20260921 | 15.9510 | 1.3583 | 79.1082 | 77.4566 |
+| PE/PB 历史最后一点 | 20260921 | 15.9510 | 1.3583 | 79.1082 | 77.4566 |
+
+**四值全同**——两份独立的资源在同一日期上给出同一组数。这是本层**最省事也最有说服力**的一条自洽检验。
+
+### 活体规模
+
+`11 指数 + 1 合并报告 + 3093 历史点 + 6 基金 + 1 汇总 = 3112 行`。
+
+### 本轮我自己的三个错误
+
+1. 明细资源路径**少了 `tdx_jsn_remote_path` 那一步**（`tdx_download_resource` 要的是已带前缀的路径，
+   别的命令都先转换），服务器回"零长度"。
+2. 路径我按参考的写法**加了 `list/`**，实际没有；三份都取回空。
+3. **渲染器第 7、8 次漏右括号**：`format_point` 与 `format_fund` 都写完了成员却没关闭对象。
+   第一个被**解析断言**抓到；第二个的教训更值得记——**断言只在被应用的地方起作用**，
+   这个测试对 4 个渲染器里的 3 个做了断言，而漏掉的正是出错的那个。
+   **活体运行的独立 JSON 解析**（证据脚本）才把它翻出来：**所以活体运行不是可选项。**
+
+### 有意不做的部分
+
+参考在这层还做了**缓存**（主表 300 秒、明细 900 秒 TTL）与多资源失败容忍。
+本实现每次直取，与项目里其它命令一致；缓存属于服务形态，不属于解析层。
+
+证据：`output/valuation_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -2041,6 +2106,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_minute` | 日期字解码（含**字 0 不是日期**、最小合法字 101）、真实 `.lc1` 普通窗口逐字段断言与**股票尾字为 0**、**真实违规窗口仍能解析且恰好计 1 条**（违规记录本身完整返回，计数不是修正）、分钟字 ≥ 1440 拒绝而 1439（23:59）接受、月份 0 拒绝**且错误消息带上测试写的字**、NaN 价格拒绝、容量不足拒绝、扩展市场主动拒绝、渲染可被项目自己的解析器解析 |
 | `test_industry` | **保留整行业的 fixture**（前缀会把行业切半，让"声明==实测"在 fixture 里失败而在真实文件上成立）、三个行业的两种计数**逐一对上**、**存在题材数 > 1 的行**（顿号计数去掉即失败）、负市盈率**按数字解析而非当作缺失**、缺码的行跳过并计数、**同类不一致记录而不拒绝**（合成行）、渲染可被项目自己的解析器解析、缺行业名渲染 null |
 | `test_limit` | **真实 hqrule.dat 的字节**（`[节名]` + 裸 `key=value`、注释、空行）、切换日 99991231 与默认值 0 的差别（**同一只 ST 股两种规则各算一次**）、三个板块的费率、**三步取整与 0.503 偏置**（需要进位的值上断言）、**北交所截断与主板四舍五入在同一个值上不相等**、非限价品种/无前收/`N` 开头新股的拒绝、规则表为 NULL 时回落到默认 |
+| `test_valuation` | **整份主表**（11 行全断言）、标签按 **UTF-8 字节精确比对**（只查"非空"会放过乱码）、四个收益字段、每行都带明细 id、**真实 PE/PB 前缀按日期合并**（20 点全部两侧都有、值来自两个资源、升序）、合成行覆盖 **pe_only / pb_only / 输入乱序 / 单侧缺失**、基金字段（净值/溢价/规模/类型）、**四个渲染器全部断言可解析**（漏掉的那个正是出错的） |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -2086,8 +2152,8 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
-12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt`、`seal_order` 的
-    **涨跌停规则半边**已交付；还剩——`panorama`、`ranking`、`valuation`、
+12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt`、`valuation`、
+    以及 `seal_order` 的**涨跌停规则半边**已交付；还剩——`panorama`、`ranking`、
     `minute_download*`（分钟线的下载与展开），以及 `seal_order` 的**封单量/封单比**半边
     （需要五档盘口与竞价不平衡量）。
 13. **板块层级展开**：`hyzt` 之上还有一层父子板块/成员并集/层级树，依赖
