@@ -46,6 +46,8 @@
 #include "tdx_pending.h"
 #include "tdx_newbond.h"
 #include "tdx_professional.h"
+#include "tdx_professional_finance.h"
+#include "tdx_zip.h"
 #include "tdx_professional_json.h"
 #include "tdx_newbond_json.h"
 #include "tdx_pricing.h"
@@ -234,6 +236,8 @@ typedef struct cli_options {
     /* professional: a local file, its kind, a field id and a date range.  The id cannot
      * reuse --index, which already means "the security is an index". */
     const char *input;
+    const char *zip;
+    const char *code;
     const char *kind;
     unsigned field_id;
     int from_date;
@@ -556,6 +560,10 @@ static int parse_options(int argc, char **argv, cli_options *options, tdx_error 
             options->resource = value;
         } else if (strcmp(argument, "--prefix") == 0) {
             options->prefix = value;
+        } else if (strcmp(argument, "--zip") == 0) {
+            options->zip = value;
+        } else if (strcmp(argument, "--code") == 0) {
+            options->code = value;
         } else if (strcmp(argument, "--input") == 0) {
             options->input = value;
         } else if (strcmp(argument, "--kind") == 0) {
@@ -3139,6 +3147,240 @@ close_output:
 }
 
 /* ------------------------------------------------------------------ */
+/* professional --zip: the quarterly finance packages                  */
+/* ------------------------------------------------------------------ */
+
+/* The argument must be a string literal: sizeof sizes it, and a computed expression
+ * decays to a pointer, so `cond ? "a" : "b"` would copy sizeof(char*) - 1 bytes. */
+#define FINANCE_LITERAL(buf, err, text) tdx_buf_append((buf), (text), sizeof(text) - 1, (err))
+
+/* A number that is absent renders null: a field the record does not carry is not zero. */
+static int append_finance_number(tdx_buf *out, int has, double value, tdx_error *err) {
+    if (!has)
+        return tdx_buf_append(out, "null", 4, err);
+    return tdx_buf_append_printf(out, err, "%.6f", value);
+}
+
+/* One ZIP from tdxfin/gpcw.txt, whose single member is the quarterly table.  The member
+ * is not copied: 5,570 records of 584 floats is 13 MB, and the accessors read one field
+ * at a time out of the decompressed buffer. */
+static int command_professional_finance(const cli_options *options, tdx_error *err) {
+    static tdx_buf archive;
+    static tdx_buf member;
+    static tdx_buf line;
+    tdx_zip_entry entries[TDX_ZIP_ENTRIES_MAX];
+    tdx_zip_entry chosen;
+    tdx_profinance_document document;
+    FILE *input = NULL;
+    FILE *stream = NULL;
+    long length;
+    size_t entry_count = 0;
+    size_t emitted = 0;
+    size_t index;
+    int status = TDX_ERR;
+
+    tdx_buf_init(&archive);
+    tdx_buf_init(&member);
+    tdx_buf_init(&line);
+    input = fopen(options->zip, "rb");
+    if (!input) {
+        tdx_error_set(err, "cannot open %s", options->zip);
+        goto done;
+    }
+    if (fseek(input, 0, SEEK_END) != 0 || (length = ftell(input)) < 0 ||
+        fseek(input, 0, SEEK_SET) != 0) {
+        tdx_error_set(err, "cannot size %s", options->zip);
+        goto done;
+    }
+    if (length > 0) {
+        if (tdx_buf_reserve(&archive, (size_t)length, err) != TDX_OK)
+            goto done;
+        if (fread(archive.data, 1, (size_t)length, input) != (size_t)length) {
+            tdx_error_set(err, "cannot read %s", options->zip);
+            goto done;
+        }
+        archive.len = (size_t)length;
+    }
+    fclose(input);
+    input = NULL;
+
+    if (tdx_zip_entries(archive.data, archive.len, entries, TDX_ZIP_ENTRIES_MAX, &entry_count,
+                        err) != TDX_OK)
+        goto done;
+    /* The member is named either by --kind (reused as the member name here) or by being
+     * the only one, which is what the packages have. */
+    if (!tdx_zip_find(entries, entry_count, options->kind ? options->kind : entries[0].name,
+                      &chosen)) {
+        tdx_error_set(err, "%s holds no member named %s", options->zip,
+                      options->kind ? options->kind : entries[0].name);
+        goto done;
+    }
+    if (tdx_zip_extract(archive.data, archive.len, &chosen, &member, err) != TDX_OK)
+        goto done;
+    if (tdx_profinance_parse(member.data, member.len, &document, err) != TDX_OK)
+        goto done;
+
+    stream = open_output(options);
+    if (!stream) {
+        tdx_error_set(err, "cannot open output %s",
+                      options->output ? options->output : "<stdout>");
+        goto done;
+    }
+    tdx_buf_clear(&line);
+    /* The paths go through the string formatter: a raw %s would put a Windows path's
+     * backslashes into the JSON unescaped, and "C:\Users\..." is not JSON - \U is not a
+     * JSON escape at all, so the line was rejected by any parser that read it. */
+    if (FINANCE_LITERAL(&line, err, "{\"type\":\"finance_document\",\"source\":") != TDX_OK)
+        goto done;
+    if (tdx_format_json_string(&line, options->zip, err) != TDX_OK)
+        goto done;
+    if (FINANCE_LITERAL(&line, err, ",\"member\":") != TDX_OK)
+        goto done;
+    if (tdx_format_json_string(&line, chosen.name, err) != TDX_OK)
+        goto done;
+    if (tdx_buf_append_printf(&line, err,
+                              ",\"member_bytes\":%u,\"member_crc\":\"%08x\","
+                              "\"version\":%u,\"report_date\":%u,\"records\":%zu,"
+                              "\"field_count\":%zu,\"index_size\":%zu,\"data_size\":%zu,"
+                              "\"named_fields\":[%u,%u]}",
+                              chosen.uncompressed_size, chosen.crc, document.version,
+                              document.report_date, document.record_count, document.field_count,
+                              document.index_size, document.data_size,
+                              TDX_PROFINANCE_FIELD_REVENUE_YOY,
+                              TDX_PROFINANCE_FIELD_PROFIT_YOY) != TDX_OK)
+        goto done;
+    if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+        fwrite(line.data, 1, line.len, stream) != line.len) {
+        tdx_error_set(err, "cannot write the finance document");
+        goto done;
+    }
+
+    if (options->code && *options->code) {
+        /* One security: every column, most of them unnamed. */
+        for (index = 0; index < document.record_count; ++index) {
+            tdx_profinance_record_view view;
+            unsigned field;
+            if (tdx_profinance_record_at(&document, index, &view, err) != TDX_OK)
+                goto done;
+            if (strncmp(view.code, options->code, 6) != 0)
+                continue;
+            tdx_buf_clear(&line);
+            if (tdx_buf_append_printf(&line, err,
+                                      "{\"type\":\"finance_record\",\"code\":\"%s\","
+                                      "\"market_id\":%d,\"report_date\":%u,\"field_count\":%zu}",
+                                      view.code, view.market_id, document.report_date,
+                                      view.field_count) != TDX_OK)
+                goto done;
+            if (tdx_buf_push(&line, '\n', err) != TDX_OK ||
+                fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the finance record");
+                goto done;
+            }
+            for (field = 1; field <= view.field_count; ++field) {
+                double value = 0.0;
+                int has;
+                const char *name;
+                if (options->field_id && field != options->field_id)
+                    continue;
+                if (options->limit && emitted >= options->limit)
+                    break;
+                name = tdx_profinance_field_name(field);
+                has = tdx_profinance_field(&view, field, &value);
+                tdx_buf_clear(&line);
+                if (tdx_buf_append_printf(&line, err,
+                                          "{\"type\":\"finance_field\",\"code\":\"%s\","
+                                          "\"field\":%u,\"name\":",
+                                          view.code, field) != TDX_OK)
+                    goto done;
+                if (name) {
+                    if (tdx_format_json_string(&line, name, err) != TDX_OK)
+                        goto done;
+                } else if (FINANCE_LITERAL(&line, err, "null") != TDX_OK) {
+                    goto done;
+                }
+                if (FINANCE_LITERAL(&line, err, ",\"value\":") != TDX_OK)
+                    goto done;
+                if (append_finance_number(&line, has, value, err) != TDX_OK)
+                    goto done;
+                if (tdx_buf_push(&line, '}', err) != TDX_OK ||
+                    tdx_buf_push(&line, '\n', err) != TDX_OK ||
+                    fwrite(line.data, 1, line.len, stream) != line.len) {
+                    tdx_error_set(err, "cannot write the finance field");
+                    goto done;
+                }
+                emitted++;
+            }
+            break;
+        }
+        if (emitted == 0 && err->message[0] == '\0') {
+            tdx_error_set(err, "%s holds no record for code %s", options->zip, options->code);
+            goto done;
+        }
+    } else {
+        /* The whole market: the two published fields per security. */
+        for (index = 0; index < document.record_count; ++index) {
+            tdx_profinance_record_view view;
+            double revenue = 0.0;
+            double profit = 0.0;
+            int has_revenue;
+            int has_profit;
+            if (options->limit && emitted >= options->limit)
+                break;
+            if (tdx_profinance_record_at(&document, index, &view, err) != TDX_OK)
+                goto done;
+            has_revenue = tdx_profinance_field(&view, TDX_PROFINANCE_FIELD_REVENUE_YOY, &revenue);
+            has_profit = tdx_profinance_field(&view, TDX_PROFINANCE_FIELD_PROFIT_YOY, &profit);
+            tdx_buf_clear(&line);
+            if (tdx_buf_append_printf(&line, err,
+                                      "{\"type\":\"finance_row\",\"code\":\"%s\","
+                                      "\"market_id\":%d,\"report_date\":%u,\"revenue_yoy\":",
+                                      view.code, view.market_id, document.report_date) != TDX_OK)
+                goto done;
+            if (append_finance_number(&line, has_revenue, revenue, err) != TDX_OK)
+                goto done;
+            if (FINANCE_LITERAL(&line, err, ",\"profit_yoy\":") != TDX_OK)
+                goto done;
+            if (append_finance_number(&line, has_profit, profit, err) != TDX_OK)
+                goto done;
+            if (options->field_id) {
+                double extra = 0.0;
+                int has_extra = tdx_profinance_field(&view, options->field_id, &extra);
+                if (tdx_buf_append_printf(&line, err, ",\"field_%u\":", options->field_id) !=
+                    TDX_OK)
+                    goto done;
+                if (append_finance_number(&line, has_extra, extra, err) != TDX_OK)
+                    goto done;
+            }
+            if (tdx_buf_push(&line, '}', err) != TDX_OK ||
+                tdx_buf_push(&line, '\n', err) != TDX_OK ||
+                fwrite(line.data, 1, line.len, stream) != line.len) {
+                tdx_error_set(err, "cannot write the finance row");
+                goto done;
+            }
+            emitted++;
+        }
+    }
+    status = TDX_OK;
+    if (!options->quiet)
+        fprintf(stderr,
+                "professional %s: member %s %u bytes crc %08x, version %u, report date %u, "
+                "%zu records of %zu fields, %zu emitted\n",
+                options->zip, chosen.name, chosen.uncompressed_size, chosen.crc,
+                document.version, document.report_date, document.record_count,
+                document.field_count, emitted);
+
+done:
+    if (input)
+        fclose(input);
+    if (stream && options->output)
+        fclose(stream);
+    tdx_buf_free(&archive);
+    tdx_buf_free(&member);
+    tdx_buf_free(&line);
+    return status;
+}
+
+/* ------------------------------------------------------------------ */
 /* professional                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -3167,8 +3409,10 @@ static int command_professional(const cli_options *options, tdx_error *err) {
     size_t index;
     int status = TDX_ERR;
 
+    if (options->zip && *options->zip)
+        return command_professional_finance(options, err);
     if (!options->input || !*options->input) {
-        tdx_error_set(err, "professional needs --input PATH");
+        tdx_error_set(err, "professional needs --input PATH or --zip PATH");
         return TDX_ERR;
     }
     if (options->kind && *options->kind &&

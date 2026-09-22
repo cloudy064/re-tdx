@@ -68,6 +68,8 @@ c/
     tdx_newbond_json.h     投影行与对账的 JSONL 渲染
     tdx_professional.h     professional_data .dat 解析与字段表
     tdx_professional_json.h 该族的 JSONL 渲染
+    tdx_professional_finance.h 季度财务包（定长表，零拷贝读取）
+    tdx_zip.h              够用即止的 ZIP 读取（EOCD/中央目录/CRC）
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -87,6 +89,7 @@ c/
     tdx_subscription.c  tdx_subscription_json.c  tdx_bond_math.c
     tdx_pricing.c  tdx_pricing_json.c  tdx_newbond.c  tdx_newbond_json.c
     tdx_professional.c  tdx_professional_json.c
+    tdx_professional_finance.c  tdx_zip.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -111,6 +114,8 @@ c/
     test_newbond.c   (shares subscription_fixtures.h, which now also carries the
                       projection whole and the subscriptions it names)
     test_professional.c  professional_fixtures.h (generated, real .dat prefixes)
+    test_professional_finance.c  professional_finance_fixtures.h
+                      (ZIP archives written by Python, read by this code)
 ```
 
 ## 构建
@@ -129,7 +134,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-29/29 测试通过、0 warning。
+30/30 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -258,6 +263,12 @@ tdx-l1stream newbond --root C:\new_tdx `
 tdx-l1stream professional --input gpsz000001.dat --kind stock `
                         --field 3 --from 20240101 --to 20241231 `
                         --output output\professional.jsonl
+
+# 季度财务包：整个市场的营收/净利同比，或某一只的全部 584 列
+tdx-l1stream professional --zip gpcw20260630.zip `
+                        --output output\finance.jsonl
+tdx-l1stream professional --zip gpcw20260630.zip --code 600519 --field 183 `
+                        --output output\maotai.jsonl
 ```
 
 通用参数：`--security`（可重复）、`--market sz,sh,bj`、`--category`、`--limit`、
@@ -1503,14 +1514,42 @@ tdxgp/gpsh880471.dat          板块级
   拒绝 2 月 31 日，但**接受**真实的闰日——把真实数据拒掉比放过一个不可能的日期更糟。
 - 长度不是 13 的整数倍时**直接报错**，而不是忽略尾部残余：定长记录流一旦错位就是解码失败。
 
+### 财务半边：季度 ZIP 包（`professional --zip`）
+
+`tdxfin/gpcw.txt` 列出 **147 个季度包**，每个是一个 ZIP，内含**单个成员**例如
+`gpcw20260630.dat`。成员是一张定长表：
+
+```
+头 20 字节   0 u16 版本(=1)   2 u32 报告期   6 u16 记录数
+            10 u16 索引项大小(=11)   12 u32 每条记录的浮点字节数
+索引          每条 11 字节：6 字节代码 + 1 字节(实测为 0) + u32 数据偏移
+数据          每条记录「字节数/4」个 float
+```
+
+实测 `gpcw20260630.zip`：19,072,810 解压后 **5,570 条 × 584 字段**，且
+`20 + 5570×11 + 5570×2336 = 13072810` **恰好等于成员大小、余 0**——布局的算术闭合是确认格式的依据。
+
+| 检验 | 结果 |
+|---|---|
+| 归档与清单一致 | 5,750,037 字节、md5 `567b4136...` **均一致** |
+| ZIP 读取 | EOCD + 中央目录 + 本地头，stored 与 deflate 两条路径，**CRC 校验** |
+| **逐值对照**（Python 独立解压读取 vs 本实现） | 6 个抽样字段**全部一致，0 处不符** |
+| 全市场路径 | 5,570 条营收/净利同比；`600519` 营收同比 **1.30%** |
+
+**只命名两个字段**：参考实现只公布 `183 = 营收同比`、`184 = 净利同比`。
+其余 **582 列按编号报告、不给名字**——编 582 个标签比留空更糟。
+
+`c/tdx_zip.c` 是**够用即止**的 ZIP 读取：不加密、不分盘、只用 stored/deflate，
+越界一律拒绝而不是猜；**CRC 真的校验**（"能解压出正确的长度但内容不对"正是那种会以
+看似合理的数字抵达调用方、却最难发现的失败）。
+
 ### 故意不做的部分
 
 - **HTTPS 取数**：该族走 `https://data.tdx.com.cn/`，要在 `c/` 引入 TLS，而本项目明确声明
-  "部署就是单个 exe + zlib"。因此保持**"外部取回、本实现解析"**，与 JSN 资源走既有传输层一致。
-- **财务半边**：`tdxfin/gpcw.txt` 的季度 ZIP 包（147 个季度，最大 5.7 MB）尚未移植，需要 ZIP 解析。
+  "部署就是单个 exe + zlib"。因此两半都保持**"外部取回、本实现解析"**，与 JSN 资源走既有传输层一致。
 
 证据：`output/professional_verification_evidence.txt`、`output/professional_manifest_evidence.txt`、
-`output/professional_data_reconnaissance.txt`。
+`output/professional_finance_evidence.txt`、`output/professional_data_reconnaissance.txt`。
 
 ## 服务端路由
 
@@ -1723,6 +1762,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_pricing` | **43 列**真实抓包按"每种形态取第一只"选取的三行（普通转债 / 仅剩一期 / 可交换债）、触发价 = 转股价 × 比例、票息表数组化、**应计利息与全价在抓包窗口上的精确取值**、转股价值与溢价率、**到期收益率为负时符号正确**（防后人"修"它）、报价**现价优先/昨收兜底**且来源随价格输出、无报价时退化为 terms-only 而条款仍在、只有正股报价时转股价值**仍然有值**（它不需要债券价）、**>10 倍面值被标注 price_plausible 而数字仍保留**、738 元真实高价**不被误标**、容量不足的拒绝、渲染括号平衡 |
 | `test_newbond` | 日期压缩（带星期/带连字符/已紧凑/非八位/空/NULL）、**20 列**投影抓包的映射（代码 + 标的 + 原始与压缩日期并存）、**13/13 按代码匹配而 0 处日期不一致**（去掉压缩立刻变 13，断言期望 0）、**2 处规模不一致且较大者为 9.80 亿**、合成用例覆盖"同代码多行由标的择优"与"代码无果才兜底"、未匹配行的代码上报、完全一致时为 exact、**每一行都断言语义一致性**（匹配到的申购行标的 == 投影标的）、全部 13 行渲染括号平衡 |
 | `test_professional` | 三张字段表的大小与**表外 id 返回空名字**、**真实 .dat 前缀**（个股 + 板块）逐字节解析并断言取值（含 f32 位精确比对）、**长度非 13 倍数 / 2 月 31 日 / 月 13 一律拒绝**而真实闰日接受、无日期记录在区间内被排除但不带区间时保留、筛选（按 id、含两端、单边界、无匹配、容量不足）、**未命名 id 渲染 `name:null`**、非有限值渲染 `null`、渲染括号平衡 |
+| `test_professional_finance` | ZIP 由 **Python 的 zipfile 写、由本代码读**（stored 与 deflate 两条路径）、**破坏 CRC 必须被拒绝**、缺 EOCD 被拒绝、定长表头/索引/数据起点逐字段断言、**字段取值按 `index` 与 `index×2` 设计**使偏移错位必然暴露、越界字段为缺失而非 0、成员结构错误的四种拒绝、只命名两个字段、**渲染行必须能被项目自己的 JSON 解析器解析**（这条抓出了两个真 bug） |
 
 `test_pool` 与 `test_hub` 都不碰公网：前者自建回环 7709 服务器，后者注入
 确定性 feed。`test_zst` 在不存在的样本目录上会 `skip:` 并以 0 退出；
@@ -1760,10 +1800,11 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 ### 本轮清单对照发现的遗漏（在范围内，尚未移植）
 
-11. **`professional_data` 的两处延伸**：① 财务半边（`tdxfin/gpcw.txt` 的季度 ZIP 包，
-    147 个季度，最大 5.7 MB）需要 ZIP 解析，尚未移植；② HTTPS 取数需要 TLS，
-    会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
-    已交付的部分见"公开数据族"一节。
+11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
+    但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
+    另一个未探的方向是 `market/` 目录下若干模块（`daily` / `hyzt` / `local_kline` /
+    `minute*` / `panorama` / `ranking` / `seal_order` / `valuation`），
+    是否属于 L1 范围尚未逐个判定。
 
 ### 性能：已测量，无余量
 
