@@ -74,6 +74,8 @@ c/
     tdx_daily_json.h       日线 bar 与汇总的 JSONL 渲染
     tdx_minute.h           本地 .lc1 分钟线（OHLC 越界只计数不拒绝）
     tdx_minute_json.h      分钟 bar 与汇总的 JSONL 渲染
+    tdx_industry.h         行业估值资源（同资源内两种成员计数互证）
+    tdx_industry_json.h    行业行与股票-行业行的 JSONL 渲染
     tdx_zst.h             zst_cache .img 容器 + tag 流解码
     tdx_zst_replay.h      增量重放：把变化流折成完整快照
     tdx_zst_json.h        快照的 JSON 渲染
@@ -94,7 +96,7 @@ c/
     tdx_pricing.c  tdx_pricing_json.c  tdx_newbond.c  tdx_newbond_json.c
     tdx_professional.c  tdx_professional_json.c
     tdx_professional_finance.c  tdx_zip.c  tdx_daily.c  tdx_daily_json.c
-    tdx_minute.c  tdx_minute_json.c
+    tdx_minute.c  tdx_minute_json.c  tdx_industry.c  tdx_industry_json.c
     tdx_zst_day.c  main.c
   tests/
     test_frame.c  test_quote.c  test_directory.c  test_endpoint.c
@@ -121,6 +123,7 @@ c/
     test_professional.c  professional_fixtures.h (generated, real .dat prefixes)
     test_daily.c  daily_fixtures.h (generated, real .day prefixes)
     test_minute.c  minute_fixtures.h (generated, a real .lc1 violation window)
+    test_industry.c  industry_fixtures.h (generated, whole industries)
     test_professional_finance.c  professional_finance_fixtures.h
                       (ZIP archives written by Python, read by this code)
 ```
@@ -141,7 +144,7 @@ ctest --test-dir build/l1stream-gcc --output-on-failure
 ```
 
 已验证环境：MSYS2 UCRT64 GCC 15.1.0 + zlib 1.3.1 + Ninja（VS 自带），
-32/32 测试通过、0 warning。
+33/33 测试通过、0 warning。
 
 `test_zst` 与 `test_endpoint` 会用真实文件：前者默认读
 `C:/new_tdx/T0002/zst_cache`（可用 `TDX_ZST_SAMPLE_DIR` 或 argv[1] 改指向），
@@ -192,6 +195,9 @@ tdx-l1stream daily --security sh600519 --root C:\new_tdx `
 # 本地分钟线：32 字节记录，价格已是元（不需要口径规则）
 tdx-l1stream minute --security sh600519 --root C:\new_tdx `
                    --output output\minute-sh600519.jsonl
+
+# 行业估值：每个行业一行（--bonds 再附上每只股票的行）
+tdx-l1stream industry --output output\industry.jsonl
 
 # 只要变化，附带原始 tag 表；--no-cache 强制走传输
 tdx-l1stream day --security sz000623 --date 20260612 --cache-dir C:\new_tdx\T0002\zst_cache `
@@ -1701,6 +1707,49 @@ tdxgp/gpsh880471.dat          板块级
 
 证据：`output/minute_verification_evidence.txt`。
 
+## 行业估值：`func_gx_hyzt101_1.jsn`（`industry`）
+
+**8,970,351 字节 / 5,567 行 / 9 列**。每行说"**一只股票属于一个行业**"，并带上该行业的估值：
+
+| 列 | 含义 |
+|---|---|
+| `$ZQDM` / `$SC` | 股票 |
+| `TDXHY` | 行业名 |
+| `$ZQDM1` / `$SC1` | 行业指数（如 880471） |
+| `hyPE` / `hyPB` | 行业市盈率 / 市净率（文本） |
+| `$S_ZQDM` | 该行业的成员，**声明**为 `market\|code` 逗号表 |
+| `sszt` | 逐行的题材列表 |
+
+### 同一份资源里的两种成员描述，实测**完全一致**
+
+`$S_ZQDM` 声明一个行业有哪些证券；行情行本身一行一只股票，**独立地实测**同一件事。
+实测 **110 个行业全部一致**（880471 声明 42/实测 42、880483 26/26、880484 43/43）。
+
+所以每行同时输出 `rows` 与 `declared` 以及 `counts_agree`——**有意思的是不一致的那一天**。
+这不是自说自话：同一份文件的两个字段互相印证。
+
+实测同时确认：**没有任何行业的行之间在 market/name/PE/PB 上不一致**（0 个）。参考实现在这种情况下
+**抛错**；本实现**记录 `inconsistent` 而不拒绝**——一个行业有陈旧行不该让调用方丢掉另外 109 个。
+
+### `sszt` 的分隔符是**顿号**，不是 ASCII 逗号
+
+这条是 fixture 当场抓出来的：我第一版对 `$S_ZQDM` 与 `sszt` 用同一个计数函数，于是
+**每一行的题材数都恰好是 1**——一个"看起来很合理"的数字。实测 **5,566/5,567 行含顿号（U+3001）**，
+所以那个 bug 会**影响每一行**。现在两个列表各按自己的分隔符计数，测试里断言"**存在题材数 > 1 的行**"：
+谁把顿号计数去掉，这条会立刻变成 0 并失败。
+
+### 与参考实现的两处不同（都是有意为之）
+
+- **不能命名两侧的行是跳过并计数，而不是抛错**（参考抛错，一行坏掉就丢掉整个文件）。
+- **不一致记录而不拒绝**（同上）。测试用合成行覆盖了这两条路径。
+
+### 未做
+
+参考在这层之上还做**板块层级展开**（父子板块、成员并集、层级树），依赖 `tdx/blocks.hpp`
+与一路 cloud 数据源。那是另一个子系统，**其范围归属尚未判定**，本轮只做行业估值这一层。
+
+证据：`output/industry_verification_evidence.txt`。
+
 ## 服务端路由
 
 | 路由 | 说明 |
@@ -1915,6 +1964,7 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 | `test_professional_finance` | ZIP 由 **Python 的 zipfile 写、由本代码读**（stored 与 deflate 两条路径）、**破坏 CRC 必须被拒绝**、缺 EOCD 被拒绝、定长表头/索引/数据起点逐字段断言、**字段取值按 `index` 与 `index×2` 设计**使偏移错位必然暴露、越界字段为缺失而非 0、成员结构错误的四种拒绝、只命名两个字段、**渲染行必须能被项目自己的 JSON 解析器解析**（这条抓出了两个真 bug） |
 | `test_daily` | **四类除数**的口径函数（股票/基金/债券/逆回购/未知码）、真实 `.day` 前缀（股票 + 债券）逐字段断言、**同一份字节两种口径比值恰好 100**（这就是参考实现会犯的那个 100 倍错）、月份 13 / 2 月 31 日拒绝而**真实闰日接受**、**拒绝时错误消息必须带上测试写的日期**（防"通过但没测到"）、零价格**只计数不拒绝**、非 32 倍数与容量不足拒绝、四种市场路径定位与短缓冲拒绝、渲染可被项目自己的解析器解析 |
 | `test_minute` | 日期字解码（含**字 0 不是日期**、最小合法字 101）、真实 `.lc1` 普通窗口逐字段断言与**股票尾字为 0**、**真实违规窗口仍能解析且恰好计 1 条**（违规记录本身完整返回，计数不是修正）、分钟字 ≥ 1440 拒绝而 1439（23:59）接受、月份 0 拒绝**且错误消息带上测试写的字**、NaN 价格拒绝、容量不足拒绝、扩展市场主动拒绝、渲染可被项目自己的解析器解析 |
+| `test_industry` | **保留整行业的 fixture**（前缀会把行业切半，让"声明==实测"在 fixture 里失败而在真实文件上成立）、三个行业的两种计数**逐一对上**、**存在题材数 > 1 的行**（顿号计数去掉即失败）、负市盈率**按数字解析而非当作缺失**、缺码的行跳过并计数、**同类不一致记录而不拒绝**（合成行）、渲染可被项目自己的解析器解析、缺行业名渲染 null |
 
 **每个渲染测试都要求输出能被项目自己的 JSON 解析器解析**（`c/tests/render_check.h`），
 而不只是括号平衡。这一条是财务包那一轮加的，**当场抓出两个真 bug**：Windows 绝对路径经
@@ -1960,10 +2010,11 @@ worker 线程与它们的 7709 会话只建立一次，跨轮复用：
 
 11. **`professional_data` 的 HTTPS 取数**：解析两半都已交付（见"公开数据族"一节），
     但取数需要 TLS，会打破"部署就是单个 exe + zlib"，因此维持"外部取回、本实现解析"。
-12. **`market/` 下其余在范围内的模块**：`daily` 与 `minute`（本地日线 / 分钟线）已交付；
-    按范围判定还剩 5 个可做——`hyzt`（行业估值 JSN）、`panorama`、`ranking`、
-    `seal_order`（涨跌停规则 + 封单）、`valuation`，以及
-    `minute_download*`（分钟线的下载与展开）。
+12. **`market/` 下其余在范围内的模块**：`daily`、`minute`、`hyzt` 已交付；
+    还剩 4 个可做——`panorama`、`ranking`、`seal_order`（涨跌停规则 + 封单）、
+    `valuation`，以及 `minute_download*`（分钟线的下载与展开）。
+13. **板块层级展开**：`hyzt` 之上还有一层父子板块/成员并集/层级树，依赖
+    `tdx/blocks.hpp` 与一路 cloud 数据源；**其范围归属尚未判定**。
 
 ### 性能：已测量，无余量
 
